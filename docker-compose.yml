@@ -1,0 +1,32 @@
+services:
+  backend:
+    build:
+      context: ./backend
+    environment:
+      DB_URL: "sqlite:////data/chips.db"
+      JWT_SECRET: "CHANGE_ME_PROD_SECRET"
+      JWT_ALGORITHM: "HS256"
+      JWT_EXPIRES_MINUTES: "10080"
+      CORS_ORIGINS: "http://localhost:3000"
+      SUPERADMIN_USERNAME: "admin"
+      SUPERADMIN_PASSWORD: "admin"
+    volumes:
+      - chips_sqlite:/data
+    expose:
+      - "8000"
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+    environment:
+      API_BASE_URL: "http://backend:8000"
+      NODE_ENV: "production"
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+volumes:
+  chips_sqlite:
