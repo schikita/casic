@@ -17,16 +17,17 @@ services:
     restart: unless-stopped
 
   frontend:
-    build:
-      context: ./frontend
-    environment:
-      API_BASE_URL: "http://backend:8000"
-      NODE_ENV: "production"
-    ports:
-      - "3000:3000"
-    depends_on:
-      - backend
-    restart: unless-stopped
+  build:
+    context: ./frontend
+  environment:
+    API_BASE_URL: "http://backend:8000"
+    NODE_ENV: "production"
+  ports:
+    - "8080:3000"   # <-- ВАЖНО
+  depends_on:
+    - backend
+  restart: unless-stopped
+
 
 volumes:
   chips_sqlite:
