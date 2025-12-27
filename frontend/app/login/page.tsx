@@ -57,7 +57,7 @@ export default function LoginPage() {
         <input
           value={username}
           onChange={(e) => setUsername(e.target.value)}
-          className="rounded-xl border px-3 py-3 text-base text-black placeholder-zinc-600"
+          className="rounded-xl border px-3 py-3 text-base text-gray placeholder-zinc-600"
           placeholder="Логин"
           autoComplete="username"
         />
@@ -65,7 +65,7 @@ export default function LoginPage() {
         <input
           value={password}
           onChange={(e) => setPassword(e.target.value)}
-          className="rounded-xl border px-3 py-3 text-base text-black placeholder-zinc-600"
+          className="rounded-xl border px-3 py-3 text-base text-gray placeholder-zinc-600"
           placeholder="Пароль"
           type="password"
           autoComplete="current-password"
