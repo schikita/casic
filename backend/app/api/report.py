@@ -27,6 +27,115 @@ from ..models.db import ChipPurchase, Seat, Session, Table, User, ChipOp
 router = APIRouter(prefix="/api/admin", tags=["admin"])
 
 
+@router.get("/day-summary")
+def get_day_summary(
+    date: str = Query(..., description="Date in YYYY-MM-DD format"),
+    db: DBSession = Depends(get_db),
+    current_user: Any = Depends(require_roles("superadmin")),
+):
+    """Get day summary data (profit/loss) as JSON for mobile display."""
+    try:
+        d = dt.date.fromisoformat(date)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD")
+
+    # Fetch sessions for the date
+    sessions = (
+        db.query(Session)
+        .options(joinedload(Session.dealer), joinedload(Session.waiter))
+        .filter(Session.date == d)
+        .order_by(Session.table_id.asc(), Session.created_at.asc())
+        .all()
+    )
+
+    session_ids = [cast(str, s.id) for s in sessions]
+
+    # Fetch seats for all sessions
+    seats_by_session: dict[str, list[Seat]] = {}
+    if session_ids:
+        seats = (
+            db.query(Seat)
+            .filter(Seat.session_id.in_(session_ids))
+            .all()
+        )
+        for seat in seats:
+            sid = cast(str, seat.session_id)
+            seats_by_session.setdefault(sid, []).append(seat)
+
+    # Fetch all chip purchases for the date
+    purchases = (
+        db.query(ChipPurchase)
+        .filter(ChipPurchase.session_id.in_(session_ids))
+        .all()
+    ) if session_ids else []
+
+    # Fetch all staff
+    staff = db.query(User).filter(User.role.in_(["dealer", "waiter"])).all()
+
+    # Calculate totals
+    total_chip_income = 0
+    total_chip_expense = 0
+
+    for p in purchases:
+        amount = int(cast(int, p.amount))
+        if amount > 0:
+            total_chip_income += amount
+        else:
+            total_chip_expense += abs(amount)
+
+    # Calculate staff salary
+    total_salary = 0
+    staff_details = []
+    for person in staff:
+        role = cast(str, person.role)
+        hourly_rate = int(cast(int, person.hourly_rate)) if person.hourly_rate else 0
+
+        if role == "dealer":
+            hours = _calculate_dealer_hours(sessions, int(cast(int, person.id)))
+        else:
+            hours = _calculate_waiter_hours(sessions, int(cast(int, person.id)))
+
+        salary = round(hours * hourly_rate)
+        if hours > 0:
+            staff_details.append({
+                "name": person.username,
+                "role": role,
+                "hours": round(hours, 2),
+                "hourly_rate": hourly_rate,
+                "salary": salary,
+            })
+        total_salary += salary
+
+    # Calculate net per-seat totals
+    total_player_balance = 0
+    for sid, seats in seats_by_session.items():
+        for seat in seats:
+            total_player_balance += int(cast(int, seat.total))
+
+    # Casino result
+    casino_result = total_chip_income - total_player_balance - total_salary
+
+    open_sessions = len([s for s in sessions if s.status == "open"])
+
+    return {
+        "date": date,
+        "income": {
+            "buyin": total_chip_income,
+        },
+        "expenses": {
+            "salaries": total_salary,
+            "cashout": total_chip_expense,
+        },
+        "result": casino_result,
+        "info": {
+            "player_balance": total_player_balance,
+            "total_sessions": len(sessions),
+            "open_sessions": open_sessions,
+        },
+        "staff": staff_details,
+    }
+
+
 # Style constants
 HEADER_FONT = Font(bold=True, color="FFFFFF")
 HEADER_FILL = PatternFill(start_color="1F4E79", end_color="1F4E79", fill_type="solid")

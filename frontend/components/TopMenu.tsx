@@ -75,6 +75,15 @@ export default function TopMenu() {
               {canSuperadmin && (
                 <button
                   className="rounded-xl bg-zinc-100 px-4 py-3 text-left text-gray-400"
+                  onClick={() => go("/admin/summary")}
+                >
+                  Итоги дня
+                </button>
+              )}
+
+              {canSuperadmin && (
+                <button
+                  className="rounded-xl bg-zinc-100 px-4 py-3 text-left text-gray-400"
                   onClick={() => go("/admin/report")}
                 >
                   Отчёт дня (XLSX)
