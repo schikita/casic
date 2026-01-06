@@ -6,6 +6,7 @@ export type User = {
   role: UserRole;
   table_id: number | null;
   is_active: boolean;
+  hourly_rate: number | null;
 };
 
 export type Table = {

@@ -52,6 +52,14 @@ def create_app() -> FastAPI:
                 conn.execute(text("ALTER TABLE sessions ADD COLUMN waiter_id INTEGER REFERENCES users(id)"))
                 conn.commit()
 
+        # Migrate: add hourly_rate column to users if missing
+        with engine.connect() as conn:
+            try:
+                conn.execute(text("SELECT hourly_rate FROM users LIMIT 1"))
+            except Exception:
+                conn.execute(text("ALTER TABLE users ADD COLUMN hourly_rate INTEGER"))
+                conn.commit()
+
         db = SessionLocal()
         try:
           exists = db.query(User).filter(User.role == "superadmin").first()

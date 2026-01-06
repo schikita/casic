@@ -15,6 +15,7 @@ class UserOut(BaseModel):
     role: UserRole
     table_id: int | None
     is_active: bool
+    hourly_rate: int | None
 
     class Config:
         from_attributes = True
@@ -40,6 +41,7 @@ class UserCreateIn(BaseModel):
     role: UserRole
     table_id: int | None = None
     is_active: bool = True
+    hourly_rate: int | None = None
 
 
 class UserUpdateIn(BaseModel):
@@ -47,6 +49,7 @@ class UserUpdateIn(BaseModel):
     role: UserRole | None = None
     table_id: int | None = None
     is_active: bool | None = None
+    hourly_rate: int | None = None
 
 
 class LoginIn(BaseModel):

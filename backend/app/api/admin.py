@@ -127,12 +127,16 @@ def create_user(payload: UserCreateIn, db: DBSession = Depends(get_db)) -> UserO
         if not db.query(Table).filter(Table.id == payload.table_id).first():
             raise HTTPException(status_code=404, detail="Table not found")
 
+    # hourly_rate is only applicable for dealer and waiter roles
+    hourly_rate = payload.hourly_rate if payload.role in ("dealer", "waiter") else None
+
     u = User(
         username=username,
         password_hash=get_password_hash(payload.password),
         role=payload.role,
         table_id=payload.table_id if payload.role == "table_admin" else None,
         is_active=payload.is_active,
+        hourly_rate=hourly_rate,
     )
     db.add(u)
     db.commit()
@@ -158,10 +162,14 @@ def update_user(user_id: int, payload: UserUpdateIn, db: DBSession = Depends(get
     if payload.password is not None:
         u.password_hash = cast(Any, get_password_hash(payload.password))
 
+    if payload.hourly_rate is not None:
+        u.hourly_rate = cast(Any, payload.hourly_rate)
+
     u_role = cast(str, u.role)
 
     if u_role == "superadmin":
         u.table_id = cast(Any, None)
+        u.hourly_rate = cast(Any, None)  # hourly_rate not applicable for superadmin
     elif u_role == "dealer":
         # dealer is not associated with tables, will be assigned to sessions
         u.table_id = cast(Any, None)
@@ -176,6 +184,7 @@ def update_user(user_id: int, payload: UserUpdateIn, db: DBSession = Depends(get
             table_id=int(cast(int, u.table_id)),
             exclude_user_id=int(cast(int, u.id)),
         )
+        u.hourly_rate = cast(Any, None)  # hourly_rate not applicable for table_admin
     elif u_role == "waiter":
         # waiter can optionally have a table_id, validate it if provided
         if u.table_id is not None:

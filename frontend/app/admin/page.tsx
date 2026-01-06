@@ -20,6 +20,7 @@ type User = {
   role: UserRole;
   table_id: number | null;
   is_active: boolean;
+  hourly_rate: number | null;
 };
 
 type ChipPurchase = {
@@ -85,6 +86,7 @@ export default function AdminPage() {
   const [newRole, setNewRole] = useState<UserRole>("dealer");
   const [newTableId, setNewTableId] = useState<number | null>(null);
   const [newActive, setNewActive] = useState(true);
+  const [newHourlyRate, setNewHourlyRate] = useState<string>("");
 
   // ------- Purchases controls -------
   const [purchaseLimit, setPurchaseLimit] = useState<number>(100);
@@ -96,6 +98,7 @@ export default function AdminPage() {
   const [draftPassword, setDraftPassword] = useState<Record<number, string>>(
     {}
   );
+  const [draftHourlyRate, setDraftHourlyRate] = useState<Record<number, string>>({});
 
   const tablesById = useMemo(() => {
     const m = new Map<number, Table>();
@@ -118,16 +121,19 @@ export default function AdminPage() {
     const t: Record<number, number | null> = {};
     const a: Record<number, boolean> = {};
     const p: Record<number, string> = {};
+    const h: Record<number, string> = {};
     for (const u of list) {
       r[u.id] = u.role;
       t[u.id] = u.table_id;
       a[u.id] = !!u.is_active;
       p[u.id] = "";
+      h[u.id] = u.hourly_rate !== null ? String(u.hourly_rate) : "";
     }
     setDraftRole(r);
     setDraftTableId(t);
     setDraftActive(a);
     setDraftPassword(p);
+    setDraftHourlyRate(h);
   }
 
   async function loadTablesOnly() {
@@ -262,6 +268,9 @@ export default function AdminPage() {
 
     const role = newRole;
     const table_id = role === "table_admin" ? newTableId : null;
+    const hourly_rate = (role === "dealer" || role === "waiter") && newHourlyRate !== ""
+      ? Number(newHourlyRate)
+      : null;
 
     setBusy(true);
     try {
@@ -273,6 +282,7 @@ export default function AdminPage() {
           role,
           table_id,
           is_active: !!newActive,
+          hourly_rate,
         }),
       });
 
@@ -281,6 +291,7 @@ export default function AdminPage() {
       setNewRole("dealer");
       setNewTableId(null);
       setNewActive(true);
+      setNewHourlyRate("");
 
       await loadUsersOnly();
       showOk("Пользователь создан");
@@ -298,14 +309,19 @@ export default function AdminPage() {
     const table_id = role === "table_admin" ? draftTableId[userId] : null;
     const is_active = !!draftActive[userId];
     const password = String(draftPassword[userId] ?? "");
+    const hourlyRateStr = draftHourlyRate[userId] ?? "";
 
-    const body: any = {
+    const body: Record<string, unknown> = {
       role,
       is_active,
     };
 
     if (role === "table_admin" && table_id !== undefined) {
       body.table_id = table_id;
+    }
+
+    if (role === "dealer" || role === "waiter") {
+      body.hourly_rate = hourlyRateStr !== "" ? Number(hourlyRateStr) : null;
     }
 
     if (isNonEmpty(password)) {
@@ -563,6 +579,17 @@ export default function AdminPage() {
                   </select>
                 )}
 
+                {(newRole === "dealer" || newRole === "waiter") && (
+                  <input
+                    type="number"
+                    value={newHourlyRate}
+                    onChange={(e) => setNewHourlyRate(e.target.value)}
+                    className={inputDark}
+                    placeholder="Ставка в час"
+                    min={0}
+                  />
+                )}
+
                 <label className="flex items-center gap-2 text-sm text-white/80">
                   <input
                     type="checkbox"
@@ -602,6 +629,7 @@ export default function AdminPage() {
                     const tableId = draftTableId[u.id] ?? u.table_id;
                     const active = draftActive[u.id] ?? u.is_active;
                     const pwd = draftPassword[u.id] ?? "";
+                    const hourlyRate = draftHourlyRate[u.id] ?? (u.hourly_rate !== null ? String(u.hourly_rate) : "");
                     const table = tableId !== null ? tablesById.get(tableId) : null;
 
                     return (
@@ -676,6 +704,23 @@ export default function AdminPage() {
                                 </option>
                               ))}
                             </select>
+                          )}
+
+                          {(role === "dealer" || role === "waiter") && (
+                            <input
+                              type="number"
+                              value={hourlyRate}
+                              onChange={(e) =>
+                                setDraftHourlyRate((prev) => ({
+                                  ...prev,
+                                  [u.id]: e.target.value,
+                                }))
+                              }
+                              className={inputDark}
+                              placeholder="Ставка в час"
+                              min={0}
+                              disabled={busy}
+                            />
                           )}
 
                           <label className="flex items-center gap-2 text-sm text-white/80">

@@ -39,6 +39,7 @@ class User(Base):
     role = Column(String(32), nullable=False)  # superadmin | table_admin | dealer | waiter
     table_id = Column(Integer, ForeignKey("tables.id"), nullable=True)
     is_active = Column(Boolean, nullable=False, default=True)
+    hourly_rate = Column(Integer, nullable=True)  # Hourly rate in chips for dealer/waiter
 
     table = relationship("Table")
 
