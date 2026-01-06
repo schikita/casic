@@ -4,7 +4,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 
-from .api import admin_router, auth_router, sessions_router
+from .api import admin_router, auth_router, sessions_router, report_router
 from .core.config import settings
 from .core.db import SessionLocal, engine
 from .core.security import get_password_hash
@@ -26,6 +26,7 @@ def create_app() -> FastAPI:
     app.include_router(auth_router)
     app.include_router(sessions_router)
     app.include_router(admin_router)
+    app.include_router(report_router)
 
     @app.get("/")
     def root():
@@ -58,6 +59,14 @@ def create_app() -> FastAPI:
                 conn.execute(text("SELECT hourly_rate FROM users LIMIT 1"))
             except Exception:
                 conn.execute(text("ALTER TABLE users ADD COLUMN hourly_rate INTEGER"))
+                conn.commit()
+
+        # Migrate: add closed_at column to sessions if missing
+        with engine.connect() as conn:
+            try:
+                conn.execute(text("SELECT closed_at FROM sessions LIMIT 1"))
+            except Exception:
+                conn.execute(text("ALTER TABLE sessions ADD COLUMN closed_at DATETIME"))
                 conn.commit()
 
         db = SessionLocal()

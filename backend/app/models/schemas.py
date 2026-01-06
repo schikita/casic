@@ -86,6 +86,7 @@ class SessionOut(BaseModel):
     date: dt.date
     status: str
     created_at: dt.datetime
+    closed_at: dt.datetime | None = None
     dealer_id: int | None = None
     waiter_id: int | None = None
     dealer: StaffOut | None = None

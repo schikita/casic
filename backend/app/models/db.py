@@ -52,6 +52,7 @@ class Session(Base):
     date = Column(Date, nullable=False, index=True)
     status = Column(String(16), nullable=False, default="open")  # open|closed
     created_at = Column(DateTime, nullable=False, default=lambda: dt.datetime.utcnow())
+    closed_at = Column(DateTime, nullable=True)  # When session was closed
 
     # Staff assignments
     dealer_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)

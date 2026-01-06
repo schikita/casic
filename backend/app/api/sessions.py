@@ -414,6 +414,7 @@ def close_session(
     _require_session_access(user, s)
 
     s.status = cast(Any, "closed")
+    s.closed_at = cast(Any, dt.datetime.utcnow())
     db.commit()
     db.refresh(s)
     return SessionOut.model_validate(s)

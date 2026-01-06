@@ -27,6 +27,7 @@ export type Session = {
   date: string;
   status: string;
   created_at: string;
+  closed_at: string | null;
   dealer_id: number | null;
   waiter_id: number | null;
   dealer: Staff | null;

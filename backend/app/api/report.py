@@ -1,0 +1,513 @@
+"""
+Comprehensive XLSX report export for superadmin.
+Includes:
+- Table states (per-seat totals)
+- Chip purchase chronology
+- Staff working hours and salary calculations
+- Profit/expense summary
+"""
+from __future__ import annotations
+
+import datetime as dt
+import io
+from typing import Any, cast
+from urllib.parse import quote
+
+from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import StreamingResponse
+from openpyxl import Workbook
+from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+from openpyxl.utils import get_column_letter
+from sqlalchemy.orm import Session as DBSession, joinedload
+from sqlalchemy import func
+
+from ..core.deps import get_current_user, get_db, require_roles
+from ..models.db import ChipPurchase, Seat, Session, Table, User, ChipOp
+
+router = APIRouter(prefix="/api/admin", tags=["admin"])
+
+
+# Style constants
+HEADER_FONT = Font(bold=True, color="FFFFFF")
+HEADER_FILL = PatternFill(start_color="1F4E79", end_color="1F4E79", fill_type="solid")
+MONEY_POSITIVE_FILL = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")
+MONEY_NEGATIVE_FILL = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid")
+THIN_BORDER = Border(
+    left=Side(style='thin'),
+    right=Side(style='thin'),
+    top=Side(style='thin'),
+    bottom=Side(style='thin')
+)
+
+
+def _style_header(ws, row: int, cols: int):
+    """Apply header styling to a row."""
+    for col in range(1, cols + 1):
+        cell = ws.cell(row=row, column=col)
+        cell.font = HEADER_FONT
+        cell.fill = HEADER_FILL
+        cell.alignment = Alignment(horizontal="center", vertical="center")
+        cell.border = THIN_BORDER
+
+
+def _auto_width(ws):
+    """Auto-adjust column widths."""
+    for column_cells in ws.columns:
+        max_length = 0
+        column = column_cells[0].column_letter
+        for cell in column_cells:
+            try:
+                if cell.value:
+                    max_length = max(max_length, len(str(cell.value)))
+            except:
+                pass
+        adjusted_width = min(max_length + 2, 50)
+        ws.column_dimensions[column].width = adjusted_width
+
+
+def _calculate_waiter_hours(
+    sessions: list[Session],
+    waiter_id: int,
+) -> float:
+    """
+    Calculate waiter working hours accounting for overlapping sessions.
+    Waiters can work on multiple sessions at a time, so we need to merge
+    overlapping time intervals.
+    """
+    intervals: list[tuple[dt.datetime, dt.datetime]] = []
+
+    for s in sessions:
+        if s.waiter_id != waiter_id:
+            continue
+        start = cast(dt.datetime, s.created_at)
+        end = cast(dt.datetime, s.closed_at) if s.closed_at else dt.datetime.utcnow()
+        intervals.append((start, end))
+
+    if not intervals:
+        return 0.0
+
+    # Sort by start time
+    intervals.sort(key=lambda x: x[0])
+
+    # Merge overlapping intervals
+    merged: list[tuple[dt.datetime, dt.datetime]] = [intervals[0]]
+    for start, end in intervals[1:]:
+        last_start, last_end = merged[-1]
+        if start <= last_end:
+            # Overlapping, extend the end if needed
+            merged[-1] = (last_start, max(last_end, end))
+        else:
+            merged.append((start, end))
+
+    # Sum total hours
+    total_seconds = sum((end - start).total_seconds() for start, end in merged)
+    return total_seconds / 3600.0
+
+
+def _calculate_dealer_hours(
+    sessions: list[Session],
+    dealer_id: int,
+) -> float:
+    """
+    Calculate dealer working hours. Dealers can only work one session at a time,
+    so we just sum up the session durations.
+    """
+    total_seconds = 0.0
+    for s in sessions:
+        if s.dealer_id != dealer_id:
+            continue
+        start = cast(dt.datetime, s.created_at)
+        end = cast(dt.datetime, s.closed_at) if s.closed_at else dt.datetime.utcnow()
+        total_seconds += (end - start).total_seconds()
+    return total_seconds / 3600.0
+
+
+@router.get(
+    "/export-report",
+    dependencies=[Depends(require_roles("superadmin"))],
+)
+def export_report(
+    date: str = Query(..., description="YYYY-MM-DD"),
+    db: DBSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Generate comprehensive XLSX report for a specific date."""
+    try:
+        d = dt.date.fromisoformat(date)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid date format (expected YYYY-MM-DD)")
+
+    # Fetch all data for the date
+    tables = db.query(Table).order_by(Table.id.asc()).all()
+    sessions = (
+        db.query(Session)
+        .options(joinedload(Session.dealer), joinedload(Session.waiter))
+        .filter(Session.date == d)
+        .order_by(Session.table_id.asc(), Session.created_at.asc())
+        .all()
+    )
+
+    session_ids = [cast(str, s.id) for s in sessions]
+
+    # Fetch seats for all sessions
+    seats_by_session: dict[str, list[Seat]] = {}
+    if session_ids:
+        seats = (
+            db.query(Seat)
+            .filter(Seat.session_id.in_(session_ids))
+            .order_by(Seat.session_id.asc(), Seat.seat_no.asc())
+            .all()
+        )
+        for seat in seats:
+            sid = cast(str, seat.session_id)
+            seats_by_session.setdefault(sid, []).append(seat)
+
+    # Fetch all chip purchases for the date
+    purchases = (
+        db.query(ChipPurchase)
+        .options(joinedload(ChipPurchase.created_by))
+        .filter(ChipPurchase.session_id.in_(session_ids))
+        .order_by(ChipPurchase.created_at.asc())
+        .all()
+    ) if session_ids else []
+
+    # Fetch all staff (dealers and waiters)
+    staff = db.query(User).filter(User.role.in_(["dealer", "waiter"])).all()
+
+    # Create workbook
+    wb = Workbook()
+    wb.remove(wb.active)  # Remove default sheet
+
+    # Sheet 1: Table States (per-seat summary for each table)
+    _create_table_states_sheet(wb, tables, sessions, seats_by_session)
+
+    # Sheet 2: Chip Purchase Chronology
+    _create_purchases_sheet(wb, purchases, tables, db)
+
+    # Sheet 3: Staff Salaries
+    _create_staff_sheet(wb, sessions, staff, d)
+
+    # Sheet 4: Summary (Profit/Expense)
+    _create_summary_sheet(wb, sessions, seats_by_session, purchases, staff, d)
+
+    # Generate file
+    output = io.BytesIO()
+    wb.save(output)
+    output.seek(0)
+
+    filename = f"casino_report_{date}.xlsx"
+
+    headers = {
+        "Content-Disposition": (
+            f'attachment; filename="{filename}"; '
+            f"filename*=UTF-8''{quote(filename)}"
+        )
+    }
+
+    return StreamingResponse(
+        output,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers=headers,
+    )
+
+
+
+def _create_table_states_sheet(
+    wb: Workbook,
+    tables: list[Table],
+    sessions: list[Session],
+    seats_by_session: dict[str, list[Seat]],
+):
+    """Create sheet with table states - seats, players, and totals."""
+    ws = wb.create_sheet(title="Состояние столов")
+
+    if not sessions:
+        ws.cell(row=1, column=1, value="Нет данных за выбранную дату")
+        ws.cell(row=1, column=1).font = Font(italic=True)
+        return
+
+    row = 1
+    for table in tables:
+        table_sessions = [s for s in sessions if s.table_id == table.id]
+        if not table_sessions:
+            continue
+
+        # Table header
+        ws.cell(row=row, column=1, value=f"Стол: {table.name}")
+        ws.cell(row=row, column=1).font = Font(bold=True, size=14)
+        row += 1
+
+        for session in table_sessions:
+            sid = cast(str, session.id)
+            seats = seats_by_session.get(sid, [])
+
+            # Session info
+            start_time = cast(dt.datetime, session.created_at).strftime("%H:%M")
+            if session.closed_at:
+                end_time = cast(dt.datetime, session.closed_at).strftime("%H:%M")
+            elif session.status == "closed":
+                end_time = "закрыта"
+            else:
+                end_time = "открыта"
+            dealer_name = session.dealer.username if session.dealer else "—"
+            waiter_name = session.waiter.username if session.waiter else "—"
+            status_text = "закрыта" if session.status == "closed" else "открыта"
+
+            ws.cell(row=row, column=1, value=f"Сессия: {start_time} - {end_time}")
+            ws.cell(row=row, column=2, value=f"Дилер: {dealer_name}")
+            ws.cell(row=row, column=3, value=f"Официант: {waiter_name}")
+            ws.cell(row=row, column=4, value=f"Статус: {status_text}")
+            row += 1
+
+            # Seats header
+            headers = ["Место", "Игрок", "Итого фишек"]
+            for col, h in enumerate(headers, 1):
+                ws.cell(row=row, column=col, value=h)
+            _style_header(ws, row, len(headers))
+            row += 1
+
+            # Seat data - only show seats with players or non-zero totals
+            session_total = 0
+            for seat in seats:
+                total = int(cast(int, seat.total))
+                player = cast(str, seat.player_name) if seat.player_name else ""
+
+                # Show all seats that have activity
+                if player or total != 0:
+                    ws.cell(row=row, column=1, value=int(cast(int, seat.seat_no)))
+                    ws.cell(row=row, column=2, value=player)
+                    cell = ws.cell(row=row, column=3, value=total)
+                    if total > 0:
+                        cell.fill = MONEY_POSITIVE_FILL
+                    elif total < 0:
+                        cell.fill = MONEY_NEGATIVE_FILL
+                    row += 1
+                session_total += total
+
+            # Session total
+            ws.cell(row=row, column=2, value="ИТОГО сессии:")
+            ws.cell(row=row, column=2).font = Font(bold=True)
+            cell = ws.cell(row=row, column=3, value=session_total)
+            cell.font = Font(bold=True)
+            if session_total > 0:
+                cell.fill = MONEY_POSITIVE_FILL
+            elif session_total < 0:
+                cell.fill = MONEY_NEGATIVE_FILL
+            row += 2
+
+        row += 1  # Extra space between tables
+
+    _auto_width(ws)
+
+
+def _create_purchases_sheet(
+    wb: Workbook,
+    purchases: list[ChipPurchase],
+    tables: list[Table],
+    db: DBSession,
+):
+    """Create sheet with chip purchase chronology."""
+    ws = wb.create_sheet(title="Хронология покупок")
+
+    # Headers
+    headers = ["Время", "Стол", "Место", "Сумма", "Выдал"]
+    for col, h in enumerate(headers, 1):
+        ws.cell(row=1, column=col, value=h)
+    _style_header(ws, 1, len(headers))
+
+    if not purchases:
+        ws.cell(row=2, column=1, value="Нет покупок за выбранную дату")
+        ws.cell(row=2, column=1).font = Font(italic=True)
+        _auto_width(ws)
+        return
+
+    tables_by_id = {t.id: t for t in tables}
+
+    row = 2
+    for p in purchases:
+        time_str = cast(dt.datetime, p.created_at).strftime("%H:%M:%S")
+        table = tables_by_id.get(int(cast(int, p.table_id)))
+        table_name = cast(str, table.name) if table else f"ID {p.table_id}"
+
+        ws.cell(row=row, column=1, value=time_str)
+        ws.cell(row=row, column=2, value=table_name)
+        ws.cell(row=row, column=3, value=int(cast(int, p.seat_no)))
+
+        amount = int(cast(int, p.amount))
+        cell = ws.cell(row=row, column=4, value=amount)
+        if amount > 0:
+            cell.fill = MONEY_POSITIVE_FILL
+        elif amount < 0:
+            cell.fill = MONEY_NEGATIVE_FILL
+
+        username = cast(str, p.created_by.username) if p.created_by else "—"
+        ws.cell(row=row, column=5, value=username)
+
+        row += 1
+
+    _auto_width(ws)
+
+
+
+def _create_staff_sheet(
+    wb: Workbook,
+    sessions: list[Session],
+    staff: list[User],
+    report_date: dt.date,
+):
+    """Create sheet with staff working hours and salary calculations."""
+    ws = wb.create_sheet(title="Зарплаты персонала")
+
+    # Headers
+    headers = ["Сотрудник", "Роль", "Часов", "Ставка/час", "Зарплата"]
+    for col, h in enumerate(headers, 1):
+        ws.cell(row=1, column=col, value=h)
+    _style_header(ws, 1, len(headers))
+
+    row = 2
+    total_salary = 0
+
+    for person in staff:
+        username = cast(str, person.username)
+        role = cast(str, person.role)
+        hourly_rate = int(cast(int, person.hourly_rate)) if person.hourly_rate else 0
+
+        # Calculate hours based on role
+        if role == "dealer":
+            hours = _calculate_dealer_hours(sessions, int(cast(int, person.id)))
+        else:  # waiter
+            hours = _calculate_waiter_hours(sessions, int(cast(int, person.id)))
+
+        if hours == 0:
+            continue  # Skip staff with no hours
+
+        salary = round(hours * hourly_rate)
+        total_salary += salary
+
+        ws.cell(row=row, column=1, value=username)
+        ws.cell(row=row, column=2, value="Дилер" if role == "dealer" else "Официант")
+        ws.cell(row=row, column=3, value=round(hours, 2))
+        ws.cell(row=row, column=4, value=hourly_rate)
+        ws.cell(row=row, column=5, value=salary)
+
+        row += 1
+
+    # Total row
+    row += 1
+    ws.cell(row=row, column=4, value="ИТОГО:")
+    ws.cell(row=row, column=4).font = Font(bold=True)
+    ws.cell(row=row, column=5, value=total_salary)
+    ws.cell(row=row, column=5).font = Font(bold=True)
+    ws.cell(row=row, column=5).fill = MONEY_NEGATIVE_FILL  # Salary is an expense
+
+    _auto_width(ws)
+
+
+def _create_summary_sheet(
+    wb: Workbook,
+    sessions: list[Session],
+    seats_by_session: dict[str, list[Seat]],
+    purchases: list[ChipPurchase],
+    staff: list[User],
+    report_date: dt.date,
+):
+    """Create summary sheet with profit/expense overview."""
+    ws = wb.create_sheet(title="Итоги дня")
+
+    # Calculate totals
+    total_chip_income = 0  # Positive chip purchases (buyin)
+    total_chip_expense = 0  # Negative chip operations (cashout)
+
+    for p in purchases:
+        amount = int(cast(int, p.amount))
+        if amount > 0:
+            total_chip_income += amount
+        else:
+            total_chip_expense += abs(amount)
+
+    # Calculate staff salary
+    total_salary = 0
+    for person in staff:
+        role = cast(str, person.role)
+        hourly_rate = int(cast(int, person.hourly_rate)) if person.hourly_rate else 0
+
+        if role == "dealer":
+            hours = _calculate_dealer_hours(sessions, int(cast(int, person.id)))
+        else:
+            hours = _calculate_waiter_hours(sessions, int(cast(int, person.id)))
+
+        total_salary += round(hours * hourly_rate)
+
+    # Calculate net per-seat totals (what players ended with)
+    total_player_balance = 0
+    for sid, seats in seats_by_session.items():
+        for seat in seats:
+            total_player_balance += int(cast(int, seat.total))
+
+    # Write summary
+    row = 1
+
+    ws.cell(row=row, column=1, value=f"Отчёт за {report_date.isoformat()}")
+    ws.cell(row=row, column=1).font = Font(bold=True, size=14)
+    row += 2
+
+    # Income section
+    ws.cell(row=row, column=1, value="ДОХОДЫ")
+    ws.cell(row=row, column=1).font = Font(bold=True)
+    ws.cell(row=row, column=1).fill = MONEY_POSITIVE_FILL
+    row += 1
+
+    ws.cell(row=row, column=1, value="Покупка фишек (buyin):")
+    ws.cell(row=row, column=2, value=total_chip_income)
+    ws.cell(row=row, column=2).fill = MONEY_POSITIVE_FILL
+    row += 2
+
+    # Expense section
+    ws.cell(row=row, column=1, value="РАСХОДЫ")
+    ws.cell(row=row, column=1).font = Font(bold=True)
+    ws.cell(row=row, column=1).fill = MONEY_NEGATIVE_FILL
+    row += 1
+
+    ws.cell(row=row, column=1, value="Зарплаты персонала:")
+    ws.cell(row=row, column=2, value=total_salary)
+    ws.cell(row=row, column=2).fill = MONEY_NEGATIVE_FILL
+    row += 1
+
+    ws.cell(row=row, column=1, value="Обналичено (cashout):")
+    ws.cell(row=row, column=2, value=total_chip_expense)
+    ws.cell(row=row, column=2).fill = MONEY_NEGATIVE_FILL
+    row += 2
+
+    # Net result
+    # Casino profit = buyin - player_balance (what players have left) - salary
+    # If player_balance is negative, casino won more
+    casino_result = total_chip_income - total_player_balance - total_salary
+
+    ws.cell(row=row, column=1, value="ИТОГО ЗА ДЕНЬ:")
+    ws.cell(row=row, column=1).font = Font(bold=True, size=12)
+    cell = ws.cell(row=row, column=2, value=casino_result)
+    cell.font = Font(bold=True, size=12)
+    if casino_result >= 0:
+        cell.fill = MONEY_POSITIVE_FILL
+    else:
+        cell.fill = MONEY_NEGATIVE_FILL
+    row += 2
+
+    # Additional info
+    ws.cell(row=row, column=1, value="Справочно:")
+    ws.cell(row=row, column=1).font = Font(bold=True)
+    row += 1
+
+    ws.cell(row=row, column=1, value="Баланс игроков (остаток фишек):")
+    ws.cell(row=row, column=2, value=total_player_balance)
+    row += 1
+
+    ws.cell(row=row, column=1, value="Количество сессий:")
+    ws.cell(row=row, column=2, value=len(sessions))
+    row += 1
+
+    open_sessions = len([s for s in sessions if s.status == "open"])
+    ws.cell(row=row, column=1, value="Открытых сессий:")
+    ws.cell(row=row, column=2, value=open_sessions)
+
+    _auto_width(ws)
