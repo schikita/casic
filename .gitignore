@@ -74,3 +74,4 @@ docker-compose.override.yml
 # ===== Misc =====
 *.tgz
 *.zip
+.kilocode/rules/frontend.md

@@ -6,7 +6,7 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 
-UserRole = Literal["superadmin", "table_admin", "dealer"]
+UserRole = Literal["superadmin", "table_admin", "dealer", "waiter"]
 
 
 class UserOut(BaseModel):
@@ -64,6 +64,17 @@ class SessionCreateIn(BaseModel):
     table_id: int | None = None
     date: dt.date | None = None
     seats_count: int = Field(default=24, ge=1, le=60)
+    dealer_id: int | None = None  # Required for session start (validated in endpoint)
+    waiter_id: int | None = None  # Optional
+
+
+class StaffOut(BaseModel):
+    id: int
+    username: str
+    role: UserRole
+
+    class Config:
+        from_attributes = True
 
 
 class SessionOut(BaseModel):
@@ -72,6 +83,10 @@ class SessionOut(BaseModel):
     date: dt.date
     status: str
     created_at: dt.datetime
+    dealer_id: int | None = None
+    waiter_id: int | None = None
+    dealer: StaffOut | None = None
+    waiter: StaffOut | None = None
 
     class Config:
         from_attributes = True

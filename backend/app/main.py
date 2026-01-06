@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy import text
 
 from .api import admin_router, auth_router, sessions_router
 from .core.config import settings
@@ -37,6 +38,19 @@ def create_app() -> FastAPI:
     @app.on_event("startup")
     def startup():
         Base.metadata.create_all(bind=engine)
+
+        # Migrate: add dealer_id and waiter_id columns to sessions if missing
+        with engine.connect() as conn:
+            try:
+                conn.execute(text("SELECT dealer_id FROM sessions LIMIT 1"))
+            except Exception:
+                conn.execute(text("ALTER TABLE sessions ADD COLUMN dealer_id INTEGER REFERENCES users(id)"))
+                conn.commit()
+            try:
+                conn.execute(text("SELECT waiter_id FROM sessions LIMIT 1"))
+            except Exception:
+                conn.execute(text("ALTER TABLE sessions ADD COLUMN waiter_id INTEGER REFERENCES users(id)"))
+                conn.commit()
 
         db = SessionLocal()
         try:

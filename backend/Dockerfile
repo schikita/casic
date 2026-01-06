@@ -12,6 +12,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r /app/requirements.txt
 
+# Force cache invalidation by using build arg
+ARG CACHEBUST=1
+RUN echo "Cache bust: $CACHEBUST"
+
 COPY . /app
 
 RUN mkdir -p /data

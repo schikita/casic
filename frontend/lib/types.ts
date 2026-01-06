@@ -1,4 +1,4 @@
-﻿export type UserRole = "superadmin" | "table_admin" | "dealer";
+﻿export type UserRole = "superadmin" | "table_admin" | "dealer" | "waiter";
 
 export type User = {
   id: number;
@@ -14,12 +14,22 @@ export type Table = {
   seats_count: number;
 };
 
+export type Staff = {
+  id: number;
+  username: string;
+  role: UserRole;
+};
+
 export type Session = {
   id: string;
   table_id: number;
   date: string;
   status: string;
   created_at: string;
+  dealer_id: number | null;
+  waiter_id: number | null;
+  dealer: Staff | null;
+  waiter: Staff | null;
 };
 
 export type Seat = {

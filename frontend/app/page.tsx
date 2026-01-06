@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import SeatGrid from "@/components/SeatGrid";
 import SeatActionSheet from "@/components/SeatActionSheet";
+import StartSessionModal from "@/components/StartSessionModal";
 import TopMenu from "@/components/TopMenu";
 import { RequireAuth } from "@/components/auth/RequireAuth";
 import { useAuth } from "@/components/auth/AuthContext";
@@ -46,6 +47,12 @@ export default function HomePage() {
   const [loading, setLoading] = useState<boolean>(true);
   const [busy, setBusy] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
+  const [showStartModal, setShowStartModal] = useState<boolean>(false);
+
+  // Roles allowed to start sessions
+  const canStartSession =
+    user?.role === "superadmin" ||
+    user?.role === "table_admin";
 
   const activeSeat = useMemo(() => {
     if (!activeSeatNo) return null;
@@ -130,23 +137,10 @@ export default function HomePage() {
     }
   }
 
-  async function createSession() {
-    if (!tableId) return;
-    setError(null);
-    setBusy(true);
-    try {
-      const seatsCount = activeTable?.seats_count ?? 24;
-      const s = await apiJson<Session>("/api/sessions", {
-        method: "POST",
-        body: JSON.stringify({ table_id: tableId, seats_count: seatsCount }),
-      });
-      setSession(s);
-      const list = await apiJson<Seat[]>("/api/sessions/" + s.id + "/seats");
-      setSeats(list);
-    } catch (e) {
-      setError(getErrorMessage(e) || "Ошибка");
-    } finally {
-      setBusy(false);
+  function handleSessionCreated() {
+    setShowStartModal(false);
+    if (tableId) {
+      loadOpenSession(tableId);
     }
   }
 
@@ -221,13 +215,14 @@ export default function HomePage() {
     setError(null);
     setBusy(true);
     try {
-      const s = await apiJson<Session>(
+      await apiJson<Session>(
         "/api/sessions/" + session.id + "/close",
         {
           method: "POST",
         }
       );
-      setSession(s);
+      setSession(null);
+      setSeats([]);
     } catch (e) {
       setError(getErrorMessage(e) || "Ошибка");
     } finally {
@@ -310,13 +305,29 @@ export default function HomePage() {
         )}
 
         {!loading && tableId && !session && (
-          <button
-            className="w-full rounded-xl bg-green-600 text-white py-4 font-bold text-lg active:bg-green-700 disabled:opacity-60"
-            onClick={createSession}
-            disabled={busy}
-          >
-            Открыть сессию
-          </button>
+          <>
+            {canStartSession ? (
+              <button
+                className="w-full rounded-xl bg-green-600 text-white py-4 font-bold text-lg active:bg-green-700 disabled:opacity-60"
+                onClick={() => setShowStartModal(true)}
+                disabled={busy}
+              >
+                Открыть сессию
+              </button>
+            ) : (
+              <div className="rounded-xl bg-zinc-100 px-3 py-3 text-sm text-zinc-700">
+                Сессия не открыта. Обратитесь к администратору стола для открытия сессии.
+              </div>
+            )}
+
+            <StartSessionModal
+              open={showStartModal}
+              tableId={tableId}
+              seatsCount={activeTable?.seats_count ?? 24}
+              onClose={() => setShowStartModal(false)}
+              onSessionCreated={handleSessionCreated}
+            />
+          </>
         )}
 
         {!loading && session && (
@@ -327,6 +338,29 @@ export default function HomePage() {
               </div>
               <div className="text-2xl font-bold tabular-nums">
                 {totals.chips}
+              </div>
+            </div>
+
+            <div className="mb-3 rounded-xl bg-zinc-100 px-4 py-3 border border-zinc-200">
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <div className="text-xs font-medium text-zinc-600 mb-1">
+                    Дилер
+                  </div>
+                  <div className="text-sm font-semibold text-zinc-900">
+                    {session.dealer?.username || "—"}
+                  </div>
+                </div>
+                {session.waiter && (
+                  <div>
+                    <div className="text-xs font-medium text-zinc-600 mb-1">
+                      Официант
+                    </div>
+                    <div className="text-sm font-semibold text-zinc-900">
+                      {session.waiter.username}
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
 

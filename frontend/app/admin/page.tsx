@@ -6,7 +6,7 @@ import { useAuth } from "@/components/auth/AuthContext";
 import TopMenu from "@/components/TopMenu";
 import { apiJson } from "@/lib/api";
 
-type UserRole = "superadmin" | "table_admin" | "dealer";
+type UserRole = "superadmin" | "table_admin" | "dealer" | "waiter";
 
 type Table = {
   id: number;
@@ -46,6 +46,7 @@ function toInt(v: any, fallback: number) {
 function roleLabel(role: UserRole) {
   if (role === "superadmin") return "Суперадмин";
   if (role === "table_admin") return "Админ стола";
+  if (role === "waiter") return "Официант";
   return "Дилер";
 }
 
@@ -82,7 +83,7 @@ export default function AdminPage() {
   const [newUsername, setNewUsername] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [newRole, setNewRole] = useState<UserRole>("dealer");
-  const [newTableId, setNewTableId] = useState("");
+  const [newTableId, setNewTableId] = useState<number | null>(null);
   const [newActive, setNewActive] = useState(true);
 
   // ------- Purchases controls -------
@@ -90,7 +91,7 @@ export default function AdminPage() {
 
   // ------- Per-user edit drafts -------
   const [draftRole, setDraftRole] = useState<Record<number, UserRole>>({});
-  const [draftTableId, setDraftTableId] = useState<Record<number, string>>({});
+  const [draftTableId, setDraftTableId] = useState<Record<number, number | null>>({});
   const [draftActive, setDraftActive] = useState<Record<number, boolean>>({});
   const [draftPassword, setDraftPassword] = useState<Record<number, string>>(
     {}
@@ -114,12 +115,12 @@ export default function AdminPage() {
 
   function normalizeUserDrafts(list: User[]) {
     const r: Record<number, UserRole> = {};
-    const t: Record<number, string> = {};
+    const t: Record<number, number | null> = {};
     const a: Record<number, boolean> = {};
     const p: Record<number, string> = {};
     for (const u of list) {
       r[u.id] = u.role;
-      t[u.id] = u.table_id == null ? "" : String(u.table_id);
+      t[u.id] = u.table_id;
       a[u.id] = !!u.is_active;
       p[u.id] = "";
     }
@@ -260,16 +261,7 @@ export default function AdminPage() {
     }
 
     const role = newRole;
-    let table_id = newTableId ? toInt(newTableId, 0) : null;
-
-    if (role !== "superadmin") {
-      if (!table_id) {
-        setError("Для этой роли нужно выбрать стол");
-        return;
-      }
-    } else {
-      table_id = null;
-    }
+    const table_id = role === "table_admin" ? newTableId : null;
 
     setBusy(true);
     try {
@@ -287,7 +279,7 @@ export default function AdminPage() {
       setNewUsername("");
       setNewPassword("");
       setNewRole("dealer");
-      setNewTableId("");
+      setNewTableId(null);
       setNewActive(true);
 
       await loadUsersOnly();
@@ -303,25 +295,18 @@ export default function AdminPage() {
     clearNotices();
 
     const role = draftRole[userId];
+    const table_id = role === "table_admin" ? draftTableId[userId] : null;
     const is_active = !!draftActive[userId];
-
-    let table_id = draftTableId[userId] ? toInt(draftTableId[userId], 0) : null;
     const password = String(draftPassword[userId] ?? "");
-
-    if (role !== "superadmin") {
-      if (!table_id) {
-        setError("Для этой роли нужно выбрать стол");
-        return;
-      }
-    } else {
-      table_id = null;
-    }
 
     const body: any = {
       role,
-      table_id,
       is_active,
     };
+
+    if (role === "table_admin" && table_id !== undefined) {
+      body.table_id = table_id;
+    }
 
     if (isNonEmpty(password)) {
       if (password.length < 4) {
@@ -350,9 +335,6 @@ export default function AdminPage() {
 
   function setRoleForUser(userId: number, role: UserRole) {
     setDraftRole((prev) => ({ ...prev, [userId]: role }));
-    if (role === "superadmin") {
-      setDraftTableId((prev) => ({ ...prev, [userId]: "" }));
-    }
   }
 
   function refreshCurrentTab() {
@@ -553,33 +535,33 @@ export default function AdminPage() {
                   className={selectDark}
                   value={newRole}
                   onChange={(e) => {
-                    const r = e.target.value as UserRole;
-                    setNewRole(r);
-                    if (r === "superadmin") setNewTableId("");
+                    setNewRole(e.target.value as UserRole);
                   }}
                 >
                   <option value="dealer">Дилер</option>
                   <option value="table_admin">Админ стола</option>
+                  <option value="waiter">Официант</option>
                   <option value="superadmin">Суперадмин</option>
                 </select>
 
-                <select
-                  className={selectDark + " disabled:opacity-60"}
-                  value={newTableId}
-                  onChange={(e) => setNewTableId(e.target.value)}
-                  disabled={newRole === "superadmin"}
-                >
-                  <option value="">
-                    {newRole === "superadmin"
-                      ? "Стол не требуется"
-                      : "Выберите стол"}
-                  </option>
-                  {tables.map((t) => (
-                    <option key={t.id} value={t.id}>
-                      {t.name} (ID {t.id})
-                    </option>
-                  ))}
-                </select>
+                {newRole === "table_admin" && (
+                  <select
+                    className={selectDark}
+                    value={newTableId ?? ""}
+                    onChange={(e) => {
+                      setNewTableId(
+                        e.target.value === "" ? null : Number(e.target.value)
+                      );
+                    }}
+                  >
+                    <option value="">Выберите стол</option>
+                    {tables.map((t) => (
+                      <option key={t.id} value={t.id}>
+                        {t.name}
+                      </option>
+                    ))}
+                  </select>
+                )}
 
                 <label className="flex items-center gap-2 text-sm text-white/80">
                   <input
@@ -596,17 +578,11 @@ export default function AdminPage() {
                   disabled={
                     busy ||
                     !isNonEmpty(newUsername) ||
-                    !isNonEmpty(newPassword) ||
-                    (newRole !== "superadmin" && !isNonEmpty(newTableId))
+                    !isNonEmpty(newPassword)
                   }
                 >
                   Создать
                 </button>
-
-                <div className="text-xs text-zinc-400">
-                  Важно: на один стол допускается только один пользователь с
-                  ролью “Админ стола”.
-                </div>
               </div>
             </div>
 
@@ -623,14 +599,10 @@ export default function AdminPage() {
                 <div className="grid gap-2">
                   {users.map((u) => {
                     const role = draftRole[u.id] ?? u.role;
-                    const tableIdStr =
-                      draftTableId[u.id] ??
-                      (u.table_id == null ? "" : String(u.table_id));
+                    const tableId = draftTableId[u.id] ?? u.table_id;
                     const active = draftActive[u.id] ?? u.is_active;
                     const pwd = draftPassword[u.id] ?? "";
-
-                    const t =
-                      u.table_id != null ? tablesById.get(u.table_id) : null;
+                    const table = tableId !== null ? tablesById.get(tableId) : null;
 
                     return (
                       <div
@@ -646,15 +618,12 @@ export default function AdminPage() {
                               </span>
                             </div>
                             <div className="text-xs text-white/60">
-                              Текущий стол:{" "}
-                              {u.table_id == null
-                                ? "—"
-                                : t
-                                ? `${t.name} (ID ${t.id})`
-                                : `Стол ID ${u.table_id}`}
-                            </div>
-                            <div className="text-xs text-white/60">
                               Текущая роль: {roleLabel(u.role)}
+                              {u.table_id !== null && table && (
+                                <span className="ml-2">
+                                  • Стол: {table.name}
+                                </span>
+                              )}
                             </div>
                           </div>
 
@@ -681,31 +650,33 @@ export default function AdminPage() {
                           >
                             <option value="dealer">Дилер</option>
                             <option value="table_admin">Админ стола</option>
+                            <option value="waiter">Официант</option>
                             <option value="superadmin">Суперадмин</option>
                           </select>
 
-                          <select
-                            className={selectDark + " disabled:opacity-60"}
-                            value={tableIdStr}
-                            onChange={(e) =>
-                              setDraftTableId((prev) => ({
-                                ...prev,
-                                [u.id]: e.target.value,
-                              }))
-                            }
-                            disabled={busy || role === "superadmin"}
-                          >
-                            <option value="">
-                              {role === "superadmin"
-                                ? "Стол не требуется"
-                                : "Выберите стол"}
-                            </option>
-                            {tables.map((t) => (
-                              <option key={t.id} value={t.id}>
-                                {t.name} (ID {t.id})
-                              </option>
-                            ))}
-                          </select>
+                          {role === "table_admin" && (
+                            <select
+                              className={selectDark}
+                              value={tableId ?? ""}
+                              onChange={(e) => {
+                                setDraftTableId((prev) => ({
+                                  ...prev,
+                                  [u.id]:
+                                    e.target.value === ""
+                                      ? null
+                                      : Number(e.target.value),
+                                }));
+                              }}
+                              disabled={busy}
+                            >
+                              <option value="">Выберите стол</option>
+                              {tables.map((t) => (
+                                <option key={t.id} value={t.id}>
+                                  {t.name}
+                                </option>
+                              ))}
+                            </select>
+                          )}
 
                           <label className="flex items-center gap-2 text-sm text-white/80">
                             <input

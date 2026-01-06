@@ -91,12 +91,15 @@ def list_users(db: DBSession = Depends(get_db)) -> list[UserOut]:
     return [UserOut.model_validate(u) for u in users]
 
 
-def _ensure_single_table_admin(db: DBSession, table_id: int, exclude_user_id: int | None = None):
+def _replace_existing_table_admin(db: DBSession, table_id: int, exclude_user_id: int | None = None):
+    """Remove table assignment from existing table_admin and assign to new user."""
     q = db.query(User).filter(User.role == "table_admin", User.table_id == table_id)
     if exclude_user_id is not None:
         q = q.filter(User.id != exclude_user_id)
-    if q.first():
-        raise HTTPException(status_code=400, detail="This table already has a table_admin")
+    existing_admin = q.first()
+    if existing_admin:
+        # Remove table assignment from existing table_admin
+        existing_admin.table_id = None
 
 
 @router.post("/users", response_model=UserOut, dependencies=[Depends(require_roles("superadmin"))])
@@ -108,19 +111,27 @@ def create_user(payload: UserCreateIn, db: DBSession = Depends(get_db)) -> UserO
     if db.query(User).filter(User.username == username).first():
         raise HTTPException(status_code=400, detail="Username already exists")
 
-    if payload.role != "superadmin":
+    if payload.role == "table_admin":
+        # table_admin requires table_id
         if payload.table_id is None:
-            raise HTTPException(status_code=400, detail="table_id is required for this role")
+            raise HTTPException(status_code=400, detail="table_id is required for table_admin role")
         if not db.query(Table).filter(Table.id == payload.table_id).first():
             raise HTTPException(status_code=404, detail="Table not found")
-        if payload.role == "table_admin":
-            _ensure_single_table_admin(db, payload.table_id)
+        _replace_existing_table_admin(db, payload.table_id)
+    elif payload.role == "dealer":
+        # dealer is not associated with tables, will be assigned to sessions
+        if payload.table_id is not None:
+            raise HTTPException(status_code=400, detail="dealer role should not have table_id")
+    elif payload.role == "waiter" and payload.table_id is not None:
+        # waiter can optionally have a table_id, validate it if provided
+        if not db.query(Table).filter(Table.id == payload.table_id).first():
+            raise HTTPException(status_code=404, detail="Table not found")
 
     u = User(
         username=username,
         password_hash=get_password_hash(payload.password),
         role=payload.role,
-        table_id=payload.table_id if payload.role != "superadmin" else None,
+        table_id=payload.table_id if payload.role == "table_admin" else None,
         is_active=payload.is_active,
     )
     db.add(u)
@@ -151,17 +162,25 @@ def update_user(user_id: int, payload: UserUpdateIn, db: DBSession = Depends(get
 
     if u_role == "superadmin":
         u.table_id = cast(Any, None)
-    else:
+    elif u_role == "dealer":
+        # dealer is not associated with tables, will be assigned to sessions
+        u.table_id = cast(Any, None)
+    elif u_role == "table_admin":
+        # table_admin requires table_id
         if u.table_id is None:
-            raise HTTPException(status_code=400, detail="table_id is required for this role")
+            raise HTTPException(status_code=400, detail="table_id is required for table_admin role")
         if not db.query(Table).filter(Table.id == u.table_id).first():
             raise HTTPException(status_code=404, detail="Table not found")
-        if u_role == "table_admin":
-            _ensure_single_table_admin(
-                db,
-                table_id=int(cast(int, u.table_id)),
-                exclude_user_id=int(cast(int, u.id)),
-            )
+        _replace_existing_table_admin(
+            db,
+            table_id=int(cast(int, u.table_id)),
+            exclude_user_id=int(cast(int, u.id)),
+        )
+    elif u_role == "waiter":
+        # waiter can optionally have a table_id, validate it if provided
+        if u.table_id is not None:
+            if not db.query(Table).filter(Table.id == u.table_id).first():
+                raise HTTPException(status_code=404, detail="Table not found")
 
     db.commit()
     db.refresh(u)
@@ -227,7 +246,7 @@ def export_day(
 
     role = cast(str, user.role)
 
-    if role not in ("superadmin", "table_admin"):
+    if role not in ("superadmin", "table_admin", "waiter"):
         raise HTTPException(status_code=403, detail="Forbidden")
 
     if role == "superadmin":

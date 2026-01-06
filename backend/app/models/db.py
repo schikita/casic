@@ -36,7 +36,7 @@ class User(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     username = Column(String(120), unique=True, nullable=False, index=True)
     password_hash = Column(String(255), nullable=False)
-    role = Column(String(32), nullable=False)  # superadmin | table_admin | dealer
+    role = Column(String(32), nullable=False)  # superadmin | table_admin | dealer | waiter
     table_id = Column(Integer, ForeignKey("tables.id"), nullable=True)
     is_active = Column(Boolean, nullable=False, default=True)
 
@@ -52,13 +52,19 @@ class Session(Base):
     status = Column(String(16), nullable=False, default="open")  # open|closed
     created_at = Column(DateTime, nullable=False, default=lambda: dt.datetime.utcnow())
 
+    # Staff assignments
+    dealer_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
+    waiter_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
+
     table = relationship("Table", back_populates="sessions")
     seats = relationship("Seat", back_populates="session", cascade="all, delete-orphan")
     ops = relationship("ChipOp", back_populates="session", cascade="all, delete-orphan")
+    dealer = relationship("User", foreign_keys=[dealer_id])
+    waiter = relationship("User", foreign_keys=[waiter_id])
 
-    __table_args__ = (
-        UniqueConstraint("table_id", "date", "status", name="uq_session_table_date_status"),
-    )
+    # Note: We don't use a unique constraint on (table_id, date, status) because
+    # it would prevent multiple closed sessions for the same table/date.
+    # Instead, we enforce "only one open session per table" in application logic.
 
 
 class Seat(Base):
