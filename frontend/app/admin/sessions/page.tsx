@@ -1,0 +1,444 @@
+"use client";
+
+import { useState, useEffect } from "react";
+import TopMenu from "@/components/TopMenu";
+import { RequireAuth } from "@/components/auth/RequireAuth";
+import { useAuth } from "@/components/auth/AuthContext";
+import { apiFetch } from "@/lib/api";
+
+type UserRole = "superadmin" | "table_admin" | "dealer" | "waiter";
+
+type Table = {
+  id: number;
+  name: string;
+};
+
+type SessionCredit = {
+  seat_no: number;
+  player_name: string | null;
+  amount: number;
+};
+
+type ClosedSession = {
+  id: string;
+  table_id: number;
+  table_name: string;
+  date: string;
+  created_at: string;
+  closed_at: string;
+  dealer_id: number | null;
+  waiter_id: number | null;
+  dealer_username: string | null;
+  waiter_username: string | null;
+  chips_in_play: number | null;
+  total_rake: number;
+  total_buyins: number;
+  total_cashouts: number;
+  credits: SessionCredit[];
+};
+
+function formatMoney(n: number | undefined | null) {
+  if (n === undefined || n === null) {
+    return "0";
+  }
+  return n.toLocaleString("ru-RU");
+}
+
+function formatDateTime(isoString: string) {
+  const d = new Date(isoString);
+  const date = d.toLocaleDateString("ru-RU", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+  });
+  const time = d.toLocaleTimeString("ru-RU", {
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+  return `${date} ${time}`;
+}
+
+function formatDate(isoString: string) {
+  const d = new Date(isoString);
+  return d.toLocaleDateString("ru-RU", {
+    day: "2-digit",
+    month: "long",
+    year: "numeric",
+  });
+}
+
+// Group sessions by working day (date)
+function groupSessionsByDay(sessions: ClosedSession[]): Map<string, ClosedSession[]> {
+  const groups = new Map<string, ClosedSession[]>();
+  
+  for (const session of sessions) {
+    const date = formatDate(session.created_at);
+    if (!groups.has(date)) {
+      groups.set(date, []);
+    }
+    groups.get(date)!.push(session);
+  }
+  
+  return groups;
+}
+
+export default function SessionsPage() {
+  const { user } = useAuth();
+  const [sessions, setSessions] = useState<ClosedSession[]>([]);
+  const [tables, setTables] = useState<Table[]>([]);
+  const [selectedTableId, setSelectedTableId] = useState<number | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  
+  // Credit close confirmation state
+  const [confirmCloseCredit, setConfirmCloseCredit] = useState<{
+    sessionId: string;
+    seatNo: number;
+    playerName: string | null;
+    amount: number;
+  } | null>(null);
+  const [closingCredit, setClosingCredit] = useState(false);
+
+  async function loadTables() {
+    try {
+      const res = await apiFetch("/api/admin/tables");
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || "Ошибка загрузки столов");
+      }
+      const tablesData = await res.json();
+      setTables(tablesData);
+      
+      // Auto-select first table for superadmin, or user's table for table_admin
+      if (user?.role === "superadmin" && tablesData.length > 0 && !selectedTableId) {
+        setSelectedTableId(tablesData[0].id);
+      } else if (user?.role === "table_admin" && user.table_id && !selectedTableId) {
+        setSelectedTableId(user.table_id);
+      }
+    } catch (e: unknown) {
+      setError((e as Error)?.message ?? "Ошибка загрузки столов");
+    }
+  }
+
+  async function loadSessions() {
+    if (!selectedTableId) return;
+    
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await apiFetch(`/api/admin/closed-sessions?table_id=${selectedTableId}`);
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || "Ошибка загрузки сессий");
+      }
+      setSessions(await res.json());
+    } catch (e: unknown) {
+      setError((e as Error)?.message ?? "Ошибка");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function closeCredit(sessionId: string, seatNo: number, amount: number) {
+    setClosingCredit(true);
+    setError(null);
+    try {
+      const res = await apiFetch("/api/admin/close-credit", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          session_id: sessionId,
+          seat_no: seatNo,
+          amount: amount,
+        }),
+      });
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || "Ошибка закрытия кредита");
+      }
+
+      // Reload sessions to show updated credit status
+      await loadSessions();
+      setConfirmCloseCredit(null);
+    } catch (e: unknown) {
+      setError((e as Error)?.message ?? "Ошибка");
+    } finally {
+      setClosingCredit(false);
+    }
+  }
+
+  // Load tables on mount
+  useEffect(() => {
+    if (user && (user.role === "superadmin" || user.role === "table_admin")) {
+      loadTables();
+    }
+  }, [user]);
+
+  // Load sessions when table is selected
+  useEffect(() => {
+    if (selectedTableId) {
+      loadSessions();
+    }
+  }, [selectedTableId]);
+
+  if (!user) {
+    return (
+      <RequireAuth>
+        <div className="p-4 text-white">Загрузка…</div>
+      </RequireAuth>
+    );
+  }
+
+  if (user.role !== "superadmin" && user.role !== "table_admin") {
+    return (
+      <RequireAuth>
+        <main className="p-4 max-w-md mx-auto">
+          <TopMenu />
+          <div className="mt-4 rounded-xl bg-zinc-900 text-white px-4 py-3">
+            Доступ запрещён. Только для администраторов столов.
+          </div>
+        </main>
+      </RequireAuth>
+    );
+  }
+
+  const sessionsByDay = groupSessionsByDay(sessions);
+  const days = Array.from(sessionsByDay.keys());
+
+  return (
+    <RequireAuth>
+      <main className="p-3 max-w-md mx-auto pb-20">
+        <TopMenu />
+
+        <div className="flex items-center justify-between mb-3">
+          <div className="text-xl font-bold text-white">История сессий</div>
+        </div>
+
+        {error && (
+          <div className="mb-3 rounded-xl bg-red-900/50 text-red-200 px-3 py-2 text-sm">
+            {error}
+          </div>
+        )}
+
+        {/* Table selector for superadmin */}
+        {user.role === "superadmin" && (
+          <div className="rounded-xl bg-zinc-900 p-4 mb-3">
+            <div className="text-white font-semibold mb-2">Выберите стол</div>
+            <select
+              className="w-full rounded-lg border border-zinc-700 bg-zinc-800 text-white px-3 py-2"
+              value={selectedTableId ?? ""}
+              onChange={(e) => setSelectedTableId(e.target.value ? Number(e.target.value) : null)}
+            >
+              <option value="">-- Выберите стол --</option>
+              {tables.map((table) => (
+                <option key={table.id} value={table.id}>
+                  {table.name}
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
+
+        {/* Display table name for table_admin */}
+        {user.role === "table_admin" && tables.length > 0 && (
+          <div className="rounded-xl bg-zinc-900 p-4 mb-3">
+            <div className="text-white font-semibold mb-1">Стол</div>
+            <div className="text-white/80">{tables[0]?.name}</div>
+          </div>
+        )}
+
+        {/* Sessions grouped by day */}
+        <div className="space-y-4">
+          {loading && (
+            <div className="text-center text-zinc-400 py-8">Загрузка...</div>
+          )}
+
+          {!loading && !selectedTableId && (
+            <div className="text-center text-zinc-500 py-8">
+              Выберите стол для просмотра истории
+            </div>
+          )}
+
+          {!loading && selectedTableId && sessions.length === 0 && (
+            <div className="text-center text-zinc-500 py-8">
+              Нет закрытых сессий
+            </div>
+          )}
+
+          {!loading && selectedTableId && days.map((day, dayIndex) => {
+            const daySessions = sessionsByDay.get(day) || [];
+            const showDaySeparator = dayIndex > 0;
+
+            return (
+              <div key={day}>
+                {showDaySeparator && (
+                  <div className="flex items-center gap-3 my-4">
+                    <div className="flex-1 h-px bg-zinc-700" />
+                    <span className="text-xs text-zinc-500">{day}</span>
+                    <div className="flex-1 h-px bg-zinc-700" />
+                  </div>
+                )}
+
+                {!showDaySeparator && (
+                  <div className="flex items-center gap-3 mb-4">
+                    <div className="flex-1 h-px bg-zinc-700" />
+                    <span className="text-xs text-zinc-500">{day}</span>
+                    <div className="flex-1 h-px bg-zinc-700" />
+                  </div>
+                )}
+
+                <div className="space-y-3">
+                  {daySessions.map((session) => (
+                    <div key={session.id} className="rounded-xl bg-zinc-900 p-4">
+                      {/* Session header */}
+                      <div className="flex items-center justify-between mb-3">
+                        <div className="text-white font-semibold">
+                          Сессия #{session.id.slice(0, 8)}
+                        </div>
+                        <div className="text-xs text-zinc-500">
+                          {formatDateTime(session.created_at)}
+                        </div>
+                      </div>
+
+                      {/* Session details */}
+                      <div className="space-y-2 text-sm">
+                        <div className="flex justify-between text-white/80">
+                          <span>Стол:</span>
+                          <span className="text-white">{session.table_name}</span>
+                        </div>
+
+                        {session.dealer_username && (
+                          <div className="flex justify-between text-white/80">
+                            <span>Дилер:</span>
+                            <span className="text-white">{session.dealer_username}</span>
+                          </div>
+                        )}
+
+                        {session.waiter_username && (
+                          <div className="flex justify-between text-white/80">
+                            <span>Официант:</span>
+                            <span className="text-white">{session.waiter_username}</span>
+                          </div>
+                        )}
+
+                        <div className="flex justify-between text-white/80">
+                          <span>Фишки в игре:</span>
+                          <span className="text-white">{formatMoney(session.chips_in_play)}</span>
+                        </div>
+
+                        <div className="flex justify-between text-white/80">
+                          <span>Всего покупок:</span>
+                          <span className="text-white">{formatMoney(session.total_buyins)}</span>
+                        </div>
+
+                        <div className="flex justify-between text-white/80">
+                          <span>Всего выплат:</span>
+                          <span className="text-white">{formatMoney(Math.abs(session.total_cashouts))}</span>
+                        </div>
+
+                        <div className="flex justify-between text-white/80">
+                          <span>Рейк:</span>
+                          <span className="text-white font-semibold">{formatMoney(session.total_rake)}</span>
+                        </div>
+                      </div>
+
+                      {/* Credits section */}
+                      {session.credits.length > 0 && (
+                        <div className="mt-4 pt-4 border-t border-zinc-800">
+                          <div className="text-white font-semibold mb-3 text-sm">
+                            Кредиты игроков
+                          </div>
+                          <div className="space-y-2">
+                            {session.credits.map((credit) => (
+                              <div
+                                key={`${session.id}-${credit.seat_no}`}
+                                className="flex items-center justify-between bg-zinc-800 rounded-lg px-3 py-2"
+                              >
+                                <div className="flex-1">
+                                  <div className="text-white text-sm">
+                                    {credit.player_name || `Место ${credit.seat_no}`}
+                                  </div>
+                                  <div className="text-xs text-zinc-500">
+                                    Место {credit.seat_no}
+                                  </div>
+                                </div>
+                                <button
+                                  onClick={() =>
+                                    setConfirmCloseCredit({
+                                      sessionId: session.id,
+                                      seatNo: credit.seat_no,
+                                      playerName: credit.player_name,
+                                      amount: credit.amount,
+                                    })
+                                  }
+                                  className="rounded-lg bg-green-600 text-white px-3 py-2 text-sm font-semibold active:bg-green-700"
+                                >
+                                  {formatMoney(credit.amount)} ₪
+                                </button>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+
+        {/* Credit close confirmation modal */}
+        {confirmCloseCredit && (
+          <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
+            <div className="rounded-xl bg-zinc-900 p-6 max-w-sm w-full">
+              <div className="text-white font-semibold text-lg mb-2">
+                Подтверждение закрытия кредита
+              </div>
+              <div className="text-white/80 mb-4 text-sm">
+                Игрок{" "}
+                <span className="font-semibold text-white">
+                  {confirmCloseCredit.playerName || `Место ${confirmCloseCredit.seatNo}`}
+                </span>{" "}
+                принёс наличные для закрытия кредита?
+              </div>
+              <div className="rounded-lg bg-zinc-800 p-3 mb-4">
+                <div className="flex justify-between text-white/80 text-sm">
+                  <span>Сумма кредита:</span>
+                  <span className="text-white font-semibold">
+                    {formatMoney(confirmCloseCredit.amount)} ₪
+                  </span>
+                </div>
+              </div>
+              <div className="flex gap-2">
+                <button
+                  className="flex-1 rounded-xl bg-zinc-800 text-white px-4 py-3 font-semibold disabled:opacity-50"
+                  onClick={() => setConfirmCloseCredit(null)}
+                  disabled={closingCredit}
+                >
+                  Отмена
+                </button>
+                <button
+                  className="flex-1 rounded-xl bg-green-600 text-white px-4 py-3 font-semibold disabled:opacity-50 active:bg-green-700"
+                  onClick={() =>
+                    closeCredit(
+                      confirmCloseCredit.sessionId,
+                      confirmCloseCredit.seatNo,
+                      confirmCloseCredit.amount
+                    )
+                  }
+                  disabled={closingCredit}
+                >
+                  {closingCredit ? "Закрытие..." : "Да, закрыть"}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+      </main>
+    </RequireAuth>
+  );
+}

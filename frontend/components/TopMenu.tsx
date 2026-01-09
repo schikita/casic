@@ -72,6 +72,15 @@ export default function TopMenu() {
                 </button>
               )}
 
+              {canExport && (
+                <button
+                  className="rounded-xl bg-zinc-100 px-4 py-3 text-left text-gray-400"
+                  onClick={() => go("/admin/sessions")}
+                >
+                  История сессий
+                </button>
+              )}
+
               {canSuperadmin && (
                 <button
                   className="rounded-xl bg-zinc-100 px-4 py-3 text-left text-gray-400"

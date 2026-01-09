@@ -149,3 +149,37 @@ class CasinoBalanceAdjustmentOut(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class ClosedSessionOut(BaseModel):
+    id: str
+    table_id: int
+    table_name: str
+    date: dt.date
+    created_at: dt.datetime
+    closed_at: dt.datetime
+    dealer_id: int | None = None
+    waiter_id: int | None = None
+    dealer_username: str | None = None
+    waiter_username: str | None = None
+    chips_in_play: int | None = None
+    total_rake: int = 0
+    total_buyins: int = 0
+    total_cashouts: int = 0
+    # Credit information per player
+    credits: list[dict] = []  # Each dict has: seat_no, player_name, amount
+
+    class Config:
+        from_attributes = True
+
+
+class CloseCreditIn(BaseModel):
+    session_id: str
+    seat_no: int = Field(..., ge=1, le=60)
+    amount: int = Field(..., gt=0, description="Amount of credit to close")
+
+
+class CloseCreditOut(BaseModel):
+    success: bool
+    message: str
+    adjustment_id: int | None = None

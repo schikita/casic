@@ -13,11 +13,14 @@ from typing import Any, cast
 
 from ..core.deps import get_current_user, get_db, require_roles
 from ..core.security import get_password_hash
-from ..models.db import CasinoBalanceAdjustment, ChipPurchase, Seat, Session, Table, User
+from ..models.db import CasinoBalanceAdjustment, ChipOp, ChipPurchase, Seat, Session, Table, User
 from ..models.schemas import (
     CasinoBalanceAdjustmentIn,
     CasinoBalanceAdjustmentOut,
     ChipPurchaseOut,
+    CloseCreditIn,
+    CloseCreditOut,
+    ClosedSessionOut,
     TableCreateIn,
     TableOut,
     UserCreateIn,
@@ -416,3 +419,226 @@ def export_day(
         )
     }
     return StreamingResponse(gen(), media_type=media_type, headers=headers)
+
+
+@router.get(
+    "/closed-sessions",
+    response_model=list[ClosedSessionOut],
+    dependencies=[Depends(require_roles("superadmin", "table_admin"))],
+)
+def list_closed_sessions(
+    table_id: int | None = Query(default=None),
+    db: DBSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """
+    Get closed sessions with credit information per player.
+    For table_admin: returns sessions for their assigned table only.
+    For superadmin: returns sessions for specified table_id.
+    """
+    role = cast(str, user.role)
+    
+    # Determine which table_id to query
+    if role == "superadmin":
+        if table_id is None:
+            raise HTTPException(status_code=400, detail="table_id is required for superadmin")
+        tid = int(table_id)
+    else:  # table_admin
+        if user.table_id is None:
+            raise HTTPException(status_code=403, detail="No table assigned")
+        tid = int(cast(int, user.table_id))
+        if table_id is not None and int(table_id) != tid:
+            raise HTTPException(status_code=403, detail="Forbidden for this table")
+    
+    # Verify table exists
+    table = db.query(Table).filter(Table.id == tid).first()
+    if not table:
+        raise HTTPException(status_code=404, detail="Table not found")
+    
+    # Get closed sessions, sorted by created_at descending
+    sessions = (
+        db.query(Session)
+        .options(joinedload(Session.dealer), joinedload(Session.waiter))
+        .filter(Session.table_id == tid, Session.status == "closed")
+        .order_by(Session.created_at.desc())
+        .all()
+    )
+    
+    out: list[ClosedSessionOut] = []
+    
+    for s in sessions:
+        # Get dealer and waiter usernames
+        dealer_username = None
+        if s.dealer is not None:
+            dealer_username = cast(str, s.dealer.username)
+        
+        waiter_username = None
+        if s.waiter is not None:
+            waiter_username = cast(str, s.waiter.username)
+        
+        # Get seats for this session
+        seats = db.query(Seat).filter(Seat.session_id == s.id).all()
+        seat_info = {int(cast(int, seat.seat_no)): seat for seat in seats}
+        
+        # Get all credit purchases for this session
+        credit_purchases = (
+            db.query(ChipPurchase)
+            .filter(
+                ChipPurchase.session_id == s.id,
+                ChipPurchase.payment_type == "credit",
+                ChipPurchase.amount > 0,
+            )
+            .all()
+        )
+        
+        # Group credit by seat_no
+        credit_by_seat: dict[int, int] = {}
+        for cp in credit_purchases:
+            seat_no = int(cast(int, cp.seat_no))
+            amount = int(cast(int, cp.amount))
+            credit_by_seat[seat_no] = credit_by_seat.get(seat_no, 0) + amount
+        
+        # Build credits list with player names
+        credits = []
+        for seat_no, amount in sorted(credit_by_seat.items()):
+            seat = seat_info.get(seat_no)
+            player_name = seat.player_name if seat and seat.player_name else None
+            credits.append({
+                "seat_no": seat_no,
+                "player_name": player_name,
+                "amount": amount
+            })
+        
+        # Calculate totals
+        chip_ops = db.query(ChipOp).filter(ChipOp.session_id == s.id).all()
+        total_buyins = sum(int(cast(int, op.amount)) for op in chip_ops if op.amount > 0)
+        total_cashouts = sum(int(cast(int, op.amount)) for op in chip_ops if op.amount < 0)
+        total_rake = total_buyins + total_cashouts  # cashouts are negative, so this gives the rake
+        
+        out.append(
+            ClosedSessionOut(
+                id=str(cast(str, s.id)),
+                table_id=int(cast(int, s.table_id)),
+                table_name=cast(str, table.name),
+                date=cast(dt.date, s.date),
+                created_at=cast(dt.datetime, s.created_at),
+                closed_at=cast(dt.datetime, s.closed_at) if s.closed_at else cast(dt.datetime, s.created_at),
+                dealer_id=int(cast(int, s.dealer_id)) if s.dealer_id else None,
+                waiter_id=int(cast(int, s.waiter_id)) if s.waiter_id else None,
+                dealer_username=dealer_username,
+                waiter_username=waiter_username,
+                chips_in_play=int(cast(int, s.chips_in_play)) if s.chips_in_play else None,
+                total_rake=total_rake,
+                total_buyins=total_buyins,
+                total_cashouts=total_cashouts,
+                credits=credits,
+            )
+        )
+    
+    return out
+
+
+@router.post(
+    "/close-credit",
+    response_model=CloseCreditOut,
+    dependencies=[Depends(require_roles("superadmin", "table_admin"))],
+)
+def close_player_credit(
+    payload: CloseCreditIn,
+    db: DBSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Close player credit by creating a balance adjustment and removing the credit from the session.
+    """
+    # Verify session exists and is closed
+    session = db.query(Session).filter(Session.id == payload.session_id).first()
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    
+    if session.status != "closed":
+        raise HTTPException(status_code=400, detail="Can only close credit for closed sessions")
+    
+    # Check table access
+    role = cast(str, current_user.role)
+    if role == "table_admin":
+        if current_user.table_id is None:
+            raise HTTPException(status_code=403, detail="No table assigned")
+        if int(cast(int, session.table_id)) != int(cast(int, current_user.table_id)):
+            raise HTTPException(status_code=403, detail="Forbidden for this table")
+    
+    # Verify seat exists
+    seat = (
+        db.query(Seat)
+        .filter(Seat.session_id == payload.session_id, Seat.seat_no == payload.seat_no)
+        .first()
+    )
+    if not seat:
+        raise HTTPException(status_code=404, detail="Seat not found")
+    
+    # Get player name for the comment
+    player_name = seat.player_name if seat.player_name else f"Seat {payload.seat_no}"
+    
+    # Calculate total credit for this seat
+    credit_purchases = (
+        db.query(ChipPurchase)
+        .filter(
+            ChipPurchase.session_id == payload.session_id,
+            ChipPurchase.seat_no == payload.seat_no,
+            ChipPurchase.payment_type == "credit",
+            ChipPurchase.amount > 0,
+        )
+        .all()
+    )
+    
+    total_credit = sum(int(cast(int, cp.amount)) for cp in credit_purchases)
+    
+    if total_credit == 0:
+        raise HTTPException(status_code=400, detail="No credit found for this player")
+    
+    if payload.amount > total_credit:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Amount exceeds available credit. Available: {total_credit}, Requested: {payload.amount}"
+        )
+    
+    # Create balance adjustment (positive amount = profit for casino)
+    table = db.query(Table).filter(Table.id == session.table_id).first()
+    table_name = table.name if table else "Unknown"
+    
+    # Format the date of the session
+    session_date = session.date.strftime("%d.%m.%Y") if session.date else ""
+    
+    adjustment = CasinoBalanceAdjustment(
+        amount=payload.amount,
+        comment=f"Долг ({player_name}) - {table_name} - {session_date}",
+        created_by_user_id=current_user.id,
+    )
+    db.add(adjustment)
+    db.flush()
+    
+    # Remove credit purchases by deleting them
+    # We need to delete enough credit purchases to match the amount
+    remaining_to_close = payload.amount
+    for cp in sorted(credit_purchases, key=lambda x: x.created_at):
+        if remaining_to_close <= 0:
+            break
+        
+        cp_amount = int(cast(int, cp.amount))
+        if cp_amount <= remaining_to_close:
+            # Delete the entire purchase
+            db.delete(cp)
+            remaining_to_close -= cp_amount
+        else:
+            # Partially close by reducing the amount
+            cp.amount = cast(Any, cp_amount - remaining_to_close)
+            remaining_to_close = 0
+    
+    db.commit()
+    db.refresh(adjustment)
+    
+    return CloseCreditOut(
+        success=True,
+        message=f"Successfully closed {payload.amount} credit for {player_name}",
+        adjustment_id=int(cast(int, adjustment.id)),
+    )
