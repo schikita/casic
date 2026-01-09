@@ -27,6 +27,22 @@ from ..models.db import ChipPurchase, Seat, Session, Table, User, ChipOp
 router = APIRouter(prefix="/api/admin", tags=["admin"])
 
 
+def _get_working_day_boundaries(date: dt.date) -> tuple[dt.datetime, dt.datetime]:
+    """
+    Get working day boundaries for a given calendar date.
+    Working day: 20:00 (8 PM) to 18:00 (6 PM) of next day.
+
+    Args:
+        date: Calendar date (YYYY-MM-DD)
+
+    Returns:
+        Tuple of (start_datetime, end_datetime) in UTC
+    """
+    start = dt.datetime.combine(date, dt.time(20, 0, 0))
+    end = dt.datetime.combine(date + dt.timedelta(days=1), dt.time(18, 0, 0))
+    return start, end
+
+
 @router.get("/day-summary")
 def get_day_summary(
     date: str = Query(..., description="Date in YYYY-MM-DD format"),
@@ -39,11 +55,14 @@ def get_day_summary(
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD")
 
-    # Fetch sessions for the date
+    # Get working day boundaries (20:00 to 18:00 next day)
+    start_time, end_time = _get_working_day_boundaries(d)
+
+    # Fetch sessions for the working day
     sessions = (
         db.query(Session)
         .options(joinedload(Session.dealer), joinedload(Session.waiter))
-        .filter(Session.date == d)
+        .filter(Session.created_at >= start_time, Session.created_at < end_time)
         .order_by(Session.table_id.asc(), Session.created_at.asc())
         .all()
     )
@@ -73,15 +92,16 @@ def get_day_summary(
     staff = db.query(User).filter(User.role.in_(["dealer", "waiter"])).all()
 
     # Calculate totals
-    total_chip_income = 0
-    total_chip_expense = 0
+    total_chip_income_cash = 0  # Cash buyins
+    total_chip_income_credit = 0  # Credit buyins (expenses)
 
     for p in purchases:
         amount = int(cast(int, p.amount))
-        if amount > 0:
-            total_chip_income += amount
-        else:
-            total_chip_expense += abs(amount)
+        if amount > 0:  # Buyin
+            if p.payment_type == "credit":
+                total_chip_income_credit += amount
+            else:
+                total_chip_income_cash += amount
 
     # Calculate staff salary
     total_salary = 0
@@ -113,18 +133,18 @@ def get_day_summary(
             total_player_balance += int(cast(int, seat.total))
 
     # Casino result
-    casino_result = total_chip_income - total_player_balance - total_salary
+    casino_result = total_chip_income_cash - total_player_balance - total_salary - total_chip_income_credit
 
     open_sessions = len([s for s in sessions if s.status == "open"])
 
     return {
         "date": date,
         "income": {
-            "buyin": total_chip_income,
+            "buyin_cash": total_chip_income_cash,
         },
         "expenses": {
             "salaries": total_salary,
-            "cashout": total_chip_expense,
+            "buyin_credit": total_chip_income_credit,
         },
         "result": casino_result,
         "info": {
@@ -246,12 +266,15 @@ def export_report(
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid date format (expected YYYY-MM-DD)")
 
-    # Fetch all data for the date
+    # Get working day boundaries (20:00 to 18:00 next day)
+    start_time, end_time = _get_working_day_boundaries(d)
+
+    # Fetch all data for the working day
     tables = db.query(Table).order_by(Table.id.asc()).all()
     sessions = (
         db.query(Session)
         .options(joinedload(Session.dealer), joinedload(Session.waiter))
-        .filter(Session.date == d)
+        .filter(Session.created_at >= start_time, Session.created_at < end_time)
         .order_by(Session.table_id.asc(), Session.created_at.asc())
         .all()
     )
@@ -361,11 +384,16 @@ def _create_table_states_sheet(
             dealer_name = session.dealer.username if session.dealer else "—"
             waiter_name = session.waiter.username if session.waiter else "—"
             status_text = "закрыта" if session.status == "closed" else "открыта"
+            chips_in_play = int(cast(int, session.chips_in_play))
 
             ws.cell(row=row, column=1, value=f"Сессия: {start_time} - {end_time}")
             ws.cell(row=row, column=2, value=f"Дилер: {dealer_name}")
             ws.cell(row=row, column=3, value=f"Официант: {waiter_name}")
             ws.cell(row=row, column=4, value=f"Статус: {status_text}")
+            row += 1
+
+            # Chips in play info
+            ws.cell(row=row, column=1, value=f"Фишек на столе: {chips_in_play}")
             row += 1
 
             # Seats header
@@ -524,15 +552,16 @@ def _create_summary_sheet(
     ws = wb.create_sheet(title="Итоги дня")
 
     # Calculate totals
-    total_chip_income = 0  # Positive chip purchases (buyin)
-    total_chip_expense = 0  # Negative chip operations (cashout)
+    total_chip_income_cash = 0  # Cash buyins
+    total_chip_income_credit = 0  # Credit buyins (expenses)
 
     for p in purchases:
         amount = int(cast(int, p.amount))
-        if amount > 0:
-            total_chip_income += amount
-        else:
-            total_chip_expense += abs(amount)
+        if amount > 0:  # Buyin
+            if p.payment_type == "credit":
+                total_chip_income_credit += amount
+            else:
+                total_chip_income_cash += amount
 
     # Calculate staff salary
     total_salary = 0
@@ -566,8 +595,8 @@ def _create_summary_sheet(
     ws.cell(row=row, column=1).fill = MONEY_POSITIVE_FILL
     row += 1
 
-    ws.cell(row=row, column=1, value="Покупка фишек (buyin):")
-    ws.cell(row=row, column=2, value=total_chip_income)
+    ws.cell(row=row, column=1, value="Покупка фишек (наличные):")
+    ws.cell(row=row, column=2, value=total_chip_income_cash)
     ws.cell(row=row, column=2).fill = MONEY_POSITIVE_FILL
     row += 2
 
@@ -582,15 +611,14 @@ def _create_summary_sheet(
     ws.cell(row=row, column=2).fill = MONEY_NEGATIVE_FILL
     row += 1
 
-    ws.cell(row=row, column=1, value="Обналичено (cashout):")
-    ws.cell(row=row, column=2, value=total_chip_expense)
+    ws.cell(row=row, column=1, value="Покупка фишек (кредит):")
+    ws.cell(row=row, column=2, value=total_chip_income_credit)
     ws.cell(row=row, column=2).fill = MONEY_NEGATIVE_FILL
     row += 2
 
     # Net result
-    # Casino profit = buyin - player_balance (what players have left) - salary
-    # If player_balance is negative, casino won more
-    casino_result = total_chip_income - total_player_balance - total_salary
+    # Casino profit = cash_buyin - player_balance (what players have left) - salary - credit_buyin
+    casino_result = total_chip_income_cash - total_player_balance - total_salary - total_chip_income_credit
 
     ws.cell(row=row, column=1, value="ИТОГО ЗА ДЕНЬ:")
     ws.cell(row=row, column=1).font = Font(bold=True, size=12)

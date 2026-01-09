@@ -4,6 +4,8 @@ import { useEffect, useMemo, useState } from "react";
 import SeatGrid from "@/components/SeatGrid";
 import SeatActionSheet from "@/components/SeatActionSheet";
 import StartSessionModal from "@/components/StartSessionModal";
+import CashConfirmationModal from "@/components/CashConfirmationModal";
+import SessionCloseConfirmationModal from "@/components/SessionCloseConfirmationModal";
 import TopMenu from "@/components/TopMenu";
 import { RequireAuth } from "@/components/auth/RequireAuth";
 import { useAuth } from "@/components/auth/AuthContext";
@@ -35,6 +37,15 @@ function getErrorMessage(e: unknown) {
   }
 }
 
+function buildOpenSessionUrl(userRole: string | undefined, tableId?: number): string {
+  let url = "/api/sessions/open";
+  // Only add table_id for superadmin and table_admin, not for dealers
+  if ((userRole === "superadmin" || userRole === "table_admin") && tableId) {
+    url += "?table_id=" + tableId;
+  }
+  return url;
+}
+
 export default function HomePage() {
   const { user } = useAuth();
 
@@ -48,6 +59,11 @@ export default function HomePage() {
   const [busy, setBusy] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
   const [showStartModal, setShowStartModal] = useState<boolean>(false);
+  const [showCashModal, setShowCashModal] = useState<boolean>(false);
+  const [pendingChipAmount, setPendingChipAmount] = useState<number | null>(null);
+  const [showCloseModal, setShowCloseModal] = useState<boolean>(false);
+  const [creditAmount, setCreditAmount] = useState<number>(0);
+  const [creditByPlayer, setCreditByPlayer] = useState<Array<{ seat_no: number; player_name: string | null; amount: number }>>([]);
 
   // Roles allowed to start sessions
   const canStartSession =
@@ -115,13 +131,12 @@ export default function HomePage() {
     }
   }
 
-  async function loadOpenSession(tid: number) {
+  async function loadOpenSession(tid?: number) {
     setError(null);
     setLoading(true);
     try {
-      const s = await apiJson<Session | null>(
-        "/api/sessions/open?table_id=" + tid
-      );
+      const url = buildOpenSessionUrl(user?.role, tid);
+      const s = await apiJson<Session | null>(url);
       setSession(s);
 
       if (s) {
@@ -170,19 +185,55 @@ export default function HomePage() {
     }
   }
 
-  async function addChips(amount: number) {
+  function addChips(amount: number) {
     if (!session || !activeSeatNo) return;
+    setError(null);
+
+    // Only show cash/credit modal for positive amounts (buyin)
+    // Negative amounts (cashout) are processed directly
+    if (amount > 0) {
+      setPendingChipAmount(amount);
+      setShowCashModal(true);
+    } else {
+      // For cashout, process directly without payment type
+      confirmChipPurchase("cash");
+    }
+  }
+
+  async function confirmChipPurchase(paymentType: "cash" | "credit") {
+    if (!session || !activeSeatNo || pendingChipAmount === null) return;
     setError(null);
     setBusy(true);
     try {
+      const amount = pendingChipAmount;
+      const body: any = {
+        seat_no: activeSeatNo,
+        amount: amount,
+      };
+
+      // Only include payment_type for positive amounts (buyin)
+      if (amount > 0) {
+        body.payment_type = paymentType;
+      }
+
       const updated = await apiJson<Seat>(
         "/api/sessions/" + session.id + "/chips",
         {
           method: "POST",
-          body: JSON.stringify({ seat_no: activeSeatNo, amount }),
+          body: JSON.stringify(body),
         }
       );
       updateSeatInState(updated);
+
+      // Refresh session to get updated chips_in_play
+      const url = buildOpenSessionUrl(user?.role, session.table_id);
+      const updatedSession = await apiJson<Session>(url);
+      if (updatedSession) {
+        setSession(updatedSession);
+      }
+
+      setShowCashModal(false);
+      setPendingChipAmount(null);
     } catch (e) {
       setError(getErrorMessage(e) || "Ошибка");
     } finally {
@@ -203,6 +254,13 @@ export default function HomePage() {
         }
       );
       updateSeatInState(updated);
+
+      // Refresh session to get updated chips_in_play
+      const url = buildOpenSessionUrl(user?.role, session.table_id);
+      const updatedSession = await apiJson<Session>(url);
+      if (updatedSession) {
+        setSession(updatedSession);
+      }
     } catch (e) {
       setError(getErrorMessage(e) || "Ошибка");
     } finally {
@@ -210,7 +268,28 @@ export default function HomePage() {
     }
   }
 
-  async function closeSession() {
+  async function showCloseConfirmation() {
+    if (!session) return;
+    setError(null);
+    setBusy(true);
+    try {
+      const result = await apiJson<{
+        total_credit: number;
+        credit_by_player: Array<{ seat_no: number; player_name: string | null; amount: number }>;
+      }>(
+        "/api/sessions/" + session.id + "/non-cash-purchases"
+      );
+      setCreditAmount(result.total_credit);
+      setCreditByPlayer(result.credit_by_player);
+      setShowCloseModal(true);
+    } catch (e) {
+      setError(getErrorMessage(e) || "Ошибка");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function confirmCloseSession() {
     if (!session) return;
     setError(null);
     setBusy(true);
@@ -223,6 +302,7 @@ export default function HomePage() {
       );
       setSession(null);
       setSeats([]);
+      setShowCloseModal(false);
     } catch (e) {
       setError(getErrorMessage(e) || "Ошибка");
     } finally {
@@ -342,7 +422,7 @@ export default function HomePage() {
             </div>
 
             <div className="mb-3 rounded-xl bg-zinc-100 px-4 py-3 border border-zinc-200">
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-2 gap-3 mb-3">
                 <div>
                   <div className="text-xs font-medium text-zinc-600 mb-1">
                     Дилер
@@ -362,6 +442,8 @@ export default function HomePage() {
                   </div>
                 )}
               </div>
+
+
             </div>
 
             <div className="flex gap-2 mb-3">
@@ -375,7 +457,7 @@ export default function HomePage() {
 
               <button
                 className="flex-1 rounded-xl px-3 py-2 bg-zinc-100 text-black active:bg-zinc-200 text-sm disabled:opacity-50"
-                onClick={closeSession}
+                onClick={showCloseConfirmation}
                 disabled={busy}
               >
                 Закрыть сессию
@@ -394,6 +476,29 @@ export default function HomePage() {
               onAssign={assignPlayer}
               onAdd={addChips}
               onUndo={undoLast}
+            />
+
+            <CashConfirmationModal
+              open={showCashModal}
+              amount={pendingChipAmount ?? 0}
+              playerName={activeSeat?.player_name ?? null}
+              seatNo={activeSeatNo ?? 0}
+              onCash={() => confirmChipPurchase("cash")}
+              onCredit={() => confirmChipPurchase("credit")}
+              onCancel={() => {
+                setShowCashModal(false);
+                setPendingChipAmount(null);
+              }}
+              loading={busy}
+            />
+
+            <SessionCloseConfirmationModal
+              open={showCloseModal}
+              creditAmount={creditAmount}
+              creditByPlayer={creditByPlayer}
+              onConfirm={confirmCloseSession}
+              onCancel={() => setShowCloseModal(false)}
+              loading={busy}
             />
 
             {busy && (

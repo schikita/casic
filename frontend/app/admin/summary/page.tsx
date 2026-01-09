@@ -31,7 +31,10 @@ interface SummaryData {
   staff: StaffEntry[];
 }
 
-function formatMoney(n: number) {
+function formatMoney(n: number | undefined | null) {
+  if (n === undefined || n === null) {
+    return "0";
+  }
   return n.toLocaleString("ru-RU");
 }
 

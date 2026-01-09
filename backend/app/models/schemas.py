@@ -69,6 +69,7 @@ class SessionCreateIn(BaseModel):
     seats_count: int = Field(default=24, ge=1, le=60)
     dealer_id: int | None = None  # Required for session start (validated in endpoint)
     waiter_id: int | None = None  # Optional
+    chips_in_play: int = Field(default=0, ge=0)  # Initial chip count on table (informational)
 
 
 class StaffOut(BaseModel):
@@ -91,6 +92,7 @@ class SessionOut(BaseModel):
     waiter_id: int | None = None
     dealer: StaffOut | None = None
     waiter: StaffOut | None = None
+    chips_in_play: int | None = None
 
     class Config:
         from_attributes = True
@@ -112,6 +114,7 @@ class SeatAssignIn(BaseModel):
 class ChipCreateIn(BaseModel):
     seat_no: int = Field(ge=1, le=60)
     amount: int
+    payment_type: str = Field(default="cash", pattern="^(cash|credit)$")  # "cash" or "credit"
 
 
 class UndoIn(BaseModel):
@@ -128,3 +131,4 @@ class ChipPurchaseOut(BaseModel):
     created_at: dt.datetime
     created_by_user_id: int | None
     created_by_username: str | None
+    payment_type: str = "cash"  # "cash" or "credit"

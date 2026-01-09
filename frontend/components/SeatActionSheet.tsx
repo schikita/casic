@@ -17,7 +17,7 @@ export default function SeatActionSheet({
   seat: Seat | null;
   onClose: () => void;
   onAssign: (playerName: string | null) => Promise<void>;
-  onAdd: (amount: number) => Promise<void>;
+  onAdd: (amount: number) => void;
   onUndo: () => Promise<void>;
 }) {
   const [playerName, setPlayerName] = useState("");
@@ -87,8 +87,8 @@ export default function SeatActionSheet({
                     ? "bg-red-600 active:bg-red-700"
                     : "bg-green-600 active:bg-green-700",
                 ].join(" ")}
-                onClick={async () => {
-                  await onAdd(v);
+                onClick={() => {
+                  onAdd(v);
                 }}
               >
                 {v > 0 ? "+" + String(v) : String(v)}
@@ -110,9 +110,9 @@ export default function SeatActionSheet({
             <button
               className="rounded-xl bg-blue-600 text-white px-4 py-3 font-semibold active:bg-blue-700 disabled:opacity-60"
               disabled={!parsedCustom}
-              onClick={async () => {
+              onClick={() => {
                 if (!parsedCustom) return;
-                await onAdd(parsedCustom);
+                onAdd(parsedCustom);
                 setCustomAmount("");
               }}
             >

@@ -228,6 +228,7 @@ def create_session(
         status=cast(Any, "open"),
         dealer_id=cast(Any, payload.dealer_id),
         waiter_id=cast(Any, waiter_id),
+        chips_in_play=cast(Any, payload.chips_in_play),
     )
     db.add(s)
     db.flush()
@@ -302,6 +303,61 @@ def assign_player(
     return SeatOut.model_validate(seat)
 
 
+@router.get(
+    "/{session_id}/non-cash-purchases",
+    dependencies=[Depends(require_roles("superadmin", "dealer", "table_admin"))],
+)
+def get_non_cash_purchases(
+    session_id: str,
+    db: DBSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Get credit purchases per player in a session."""
+    s = db.query(Session).filter(Session.id == session_id).first()
+    if not s:
+        raise HTTPException(status_code=404, detail="Session not found")
+    _require_session_access(user, s)
+
+    purchases = (
+        db.query(ChipPurchase)
+        .filter(
+            ChipPurchase.session_id == session_id,
+            ChipPurchase.payment_type == "credit",
+            ChipPurchase.amount > 0,
+        )
+        .all()
+    )
+
+    # Group credit by seat_no to get per-player credit
+    credit_by_seat = {}
+    for p in purchases:
+        seat_no = int(cast(int, p.seat_no))
+        amount = int(cast(int, p.amount))
+        credit_by_seat[seat_no] = credit_by_seat.get(seat_no, 0) + amount
+
+    # Get seat info to include player names
+    seats = db.query(Seat).filter(Seat.session_id == session_id).all()
+    seat_info = {int(cast(int, s.seat_no)): s for s in seats}
+
+    # Build response with player names
+    credit_list = []
+    total_credit = 0
+    for seat_no, amount in sorted(credit_by_seat.items()):
+        seat = seat_info.get(seat_no)
+        player_name = seat.player_name if seat else None
+        credit_list.append({
+            "seat_no": seat_no,
+            "player_name": player_name,
+            "amount": amount
+        })
+        total_credit += amount
+
+    return {
+        "total_credit": total_credit,
+        "credit_by_player": credit_list
+    }
+
+
 @router.post(
     "/{session_id}/chips",
     response_model=SeatOut,
@@ -338,15 +394,29 @@ def add_chips(
     db.add(op)
     db.flush()
 
-    purchase = ChipPurchase(
-        table_id=_as_int(s.table_id),
-        session_id=str(cast(str, s.id)),
-        seat_no=int(payload.seat_no),
-        amount=delta,
-        chip_op_id=_as_int(op.id),
-        created_by_user_id=_as_int(user.id),
-    )
-    db.add(purchase)
+    # Only create ChipPurchase record for positive amounts (buyin)
+    # Negative amounts (cashout) are not tracked as purchases
+    if delta > 0:
+        purchase = ChipPurchase(
+            table_id=_as_int(s.table_id),
+            session_id=str(cast(str, s.id)),
+            seat_no=int(payload.seat_no),
+            amount=delta,
+            chip_op_id=_as_int(op.id),
+            created_by_user_id=_as_int(user.id),
+            payment_type=cast(Any, payload.payment_type),
+        )
+        db.add(purchase)
+
+        # Auto-increment chips_in_play if total chips bought exceed current chips_in_play
+        current_chips_in_play = _as_int(s.chips_in_play)
+        total_chips_bought = sum(
+            int(cast(int, p.amount))
+            for p in db.query(ChipPurchase).filter(ChipPurchase.session_id == session_id).all()
+        ) + delta  # Include the current purchase
+
+        if total_chips_bought > current_chips_in_play:
+            s.chips_in_play = cast(Any, total_chips_bought)
 
     db.commit()
     db.refresh(seat)
@@ -418,3 +488,6 @@ def close_session(
     db.commit()
     db.refresh(s)
     return SessionOut.model_validate(s)
+
+
+

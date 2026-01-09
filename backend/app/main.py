@@ -69,6 +69,27 @@ def create_app() -> FastAPI:
                 conn.execute(text("ALTER TABLE sessions ADD COLUMN closed_at DATETIME"))
                 conn.commit()
 
+        # Migrate: add rake_in and rake_out columns to sessions if missing
+        with engine.connect() as conn:
+            try:
+                conn.execute(text("SELECT rake_in FROM sessions LIMIT 1"))
+            except Exception:
+                conn.execute(text("ALTER TABLE sessions ADD COLUMN rake_in INTEGER NOT NULL DEFAULT 0"))
+                conn.commit()
+            try:
+                conn.execute(text("SELECT rake_out FROM sessions LIMIT 1"))
+            except Exception:
+                conn.execute(text("ALTER TABLE sessions ADD COLUMN rake_out INTEGER NOT NULL DEFAULT 0"))
+                conn.commit()
+
+        # Migrate: add payment_type column to chip_purchases if missing
+        with engine.connect() as conn:
+            try:
+                conn.execute(text("SELECT payment_type FROM chip_purchases LIMIT 1"))
+            except Exception:
+                conn.execute(text("ALTER TABLE chip_purchases ADD COLUMN payment_type VARCHAR(16) NOT NULL DEFAULT 'cash'"))
+                conn.commit()
+
         db = SessionLocal()
         try:
           exists = db.query(User).filter(User.role == "superadmin").first()

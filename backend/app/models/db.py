@@ -58,6 +58,9 @@ class Session(Base):
     dealer_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
     waiter_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
 
+    # Chips in play tracking (informational only)
+    chips_in_play = Column(Integer, nullable=False, default=0)  # Current chip count on table (auto-incremented)
+
     table = relationship("Table", back_populates="sessions")
     seats = relationship("Seat", back_populates="session", cascade="all, delete-orphan")
     ops = relationship("ChipOp", back_populates="session", cascade="all, delete-orphan")
@@ -115,6 +118,9 @@ class ChipPurchase(Base):
     created_at = Column(DateTime, nullable=False, default=dt.datetime.utcnow, index=True)
 
     created_by_user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+
+    # Payment type: "cash" or "credit"
+    payment_type = Column(String(16), nullable=False, default="cash")
 
     table = relationship("Table")
     session = relationship("Session")

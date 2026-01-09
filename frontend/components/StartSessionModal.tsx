@@ -57,6 +57,7 @@ export default function StartSessionModal({
       setError("Необходимо выбрать дилера");
       return;
     }
+
     setSubmitting(true);
     setError(null);
     try {
@@ -67,6 +68,7 @@ export default function StartSessionModal({
           seats_count: seatsCount,
           dealer_id: selectedDealer,
           waiter_id: selectedWaiter,
+          chips_in_play: 0,
         }),
       });
       onSessionCreated();
@@ -84,7 +86,11 @@ export default function StartSessionModal({
   return (
     <div
       className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center"
-      onClick={(e) => e.target === e.currentTarget && !submitting && onClose()}
+      onClick={(e) => {
+        if (e.target === e.currentTarget && !submitting) {
+          onClose();
+        }
+      }}
     >
       <div
         className="bg-white w-full max-w-md rounded-2xl p-5 shadow-xl mx-4"
@@ -122,6 +128,7 @@ export default function StartSessionModal({
                   setSelectedDealer(e.target.value ? Number(e.target.value) : null)
                 }
                 disabled={submitting}
+                onClick={(e) => e.stopPropagation()}
               >
                 <option value="">Выберите дилера</option>
                 {dealers.map((d) => (
@@ -137,7 +144,7 @@ export default function StartSessionModal({
               )}
             </div>
 
-            <div className="mb-6">
+            <div className="mb-4">
               <label className="block text-sm font-medium text-zinc-700 mb-2">
                 Официант <span className="text-zinc-400">(опционально)</span>
               </label>
@@ -148,6 +155,7 @@ export default function StartSessionModal({
                   setSelectedWaiter(e.target.value ? Number(e.target.value) : null)
                 }
                 disabled={submitting}
+                onClick={(e) => e.stopPropagation()}
               >
                 <option value="">Без официанта</option>
                 {waiters.map((w) => (

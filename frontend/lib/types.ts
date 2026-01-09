@@ -32,10 +32,24 @@ export type Session = {
   waiter_id: number | null;
   dealer: Staff | null;
   waiter: Staff | null;
+  chips_in_play: number | null;
 };
 
 export type Seat = {
   seat_no: number;
   player_name: string | null;
   total: number;
+};
+
+export type ChipPurchase = {
+  id: number;
+  table_id: number;
+  table_name: string;
+  session_id: string | null;
+  seat_no: number;
+  amount: number;
+  created_at: string;
+  created_by_user_id: number | null;
+  created_by_username: string | null;
+  payment_type: "cash" | "credit";
 };
