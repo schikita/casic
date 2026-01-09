@@ -1,10 +1,10 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import TopMenu from "@/components/TopMenu";
 import { RequireAuth } from "@/components/auth/RequireAuth";
 import { useAuth } from "@/components/auth/AuthContext";
-import { apiDownload } from "@/lib/api";
+import { apiDownload, apiFetch } from "@/lib/api";
 
 function todayLocalISO() {
   const d = new Date();
@@ -14,13 +14,38 @@ function todayLocalISO() {
   return `${yyyy}-${mm}-${dd}`;
 }
 
+async function fetchPreselectedDate(): Promise<string> {
+  const res = await apiFetch("/api/admin/day-summary/preselected-date");
+  if (!res.ok) {
+    throw new Error("Failed to fetch preselected date");
+  }
+  const data = await res.json();
+  return data.date;
+}
+
 export default function ReportPage() {
   const { user } = useAuth();
-
+  
   const [date, setDate] = useState(todayLocalISO());
+  const [initialDateLoaded, setInitialDateLoaded] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [ok, setOk] = useState<string | null>(null);
+
+  // Load preselected date on mount (same logic as summary page)
+  useEffect(() => {
+    if (user?.role === "superadmin" && !initialDateLoaded) {
+      fetchPreselectedDate()
+        .then((preselectedDate) => {
+          setDate(preselectedDate);
+          setInitialDateLoaded(true);
+        })
+        .catch(() => {
+          // Fallback to today if preselected date fetch fails
+          setInitialDateLoaded(true);
+        });
+    }
+  }, [user, initialDateLoaded]);
 
   async function downloadReport() {
     setError(null);
@@ -43,8 +68,8 @@ export default function ReportPage() {
 
       setOk("Отчёт скачан");
       setTimeout(() => setOk(null), 2500);
-    } catch (e: any) {
-      setError(e?.message ?? "Ошибка генерации отчёта");
+    } catch (e: unknown) {
+      setError((e as Error)?.message ?? "Ошибка генерации отчёта");
     } finally {
       setBusy(false);
     }
@@ -124,6 +149,7 @@ export default function ReportPage() {
                 <li>Состояние столов (места, игроки, фишки)</li>
                 <li>Хронология покупок фишек</li>
                 <li>Зарплаты персонала</li>
+                <li>Корректировки баланса</li>
                 <li>Итоги дня (прибыль/расходы)</li>
               </ul>
             </div>

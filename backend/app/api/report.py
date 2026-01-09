@@ -267,6 +267,9 @@ HEADER_FONT = Font(bold=True, color="FFFFFF")
 HEADER_FILL = PatternFill(start_color="1F4E79", end_color="1F4E79", fill_type="solid")
 MONEY_POSITIVE_FILL = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")
 MONEY_NEGATIVE_FILL = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid")
+# Dark shades for payment types
+CASH_DARK_FILL = PatternFill(start_color="006400", end_color="006400", fill_type="solid")  # Dark green
+CREDIT_DARK_FILL = PatternFill(start_color="8B0000", end_color="8B0000", fill_type="solid")  # Dark red
 THIN_BORDER = Border(
     left=Side(style='thin'),
     right=Side(style='thin'),
@@ -286,7 +289,7 @@ def _style_header(ws, row: int, cols: int):
 
 
 def _auto_width(ws):
-    """Auto-adjust column widths."""
+    """Auto-adjust column widths with better minimum width for readability."""
     for column_cells in ws.columns:
         max_length = 0
         column = column_cells[0].column_letter
@@ -296,7 +299,11 @@ def _auto_width(ws):
                     max_length = max(max_length, len(str(cell.value)))
             except:
                 pass
-        adjusted_width = min(max_length + 2, 50)
+        # Increased minimum width from (max_length + 2) to (max_length + 4) for better fit
+        # Also increased maximum from 50 to 60 for longer text fields
+        adjusted_width = min(max_length + 4, 60)
+        # Ensure minimum width of 12 for very short columns
+        adjusted_width = max(adjusted_width, 12)
         ws.column_dimensions[column].width = adjusted_width
 
 
@@ -409,6 +416,15 @@ def export_report(
         .all()
     ) if session_ids else []
 
+    # Fetch balance adjustments for the working day
+    balance_adjustments = (
+        db.query(CasinoBalanceAdjustment)
+        .options(joinedload(CasinoBalanceAdjustment.created_by))
+        .filter(CasinoBalanceAdjustment.created_at >= start_time, CasinoBalanceAdjustment.created_at < end_time)
+        .order_by(CasinoBalanceAdjustment.created_at.asc())
+        .all()
+    )
+
     # Fetch all staff (dealers and waiters)
     staff = db.query(User).filter(User.role.in_(["dealer", "waiter"])).all()
 
@@ -425,8 +441,11 @@ def export_report(
     # Sheet 3: Staff Salaries
     _create_staff_sheet(wb, sessions, staff, d)
 
-    # Sheet 4: Summary (Profit/Expense)
-    _create_summary_sheet(wb, sessions, seats_by_session, purchases, staff, d)
+    # Sheet 4: Balance Adjustments
+    _create_balance_adjustments_sheet(wb, balance_adjustments, d)
+
+    # Sheet 5: Summary (Profit/Expense)
+    _create_summary_sheet(wb, sessions, seats_by_session, purchases, staff, balance_adjustments, d)
 
     # Generate file
     output = io.BytesIO()
@@ -553,7 +572,7 @@ def _create_purchases_sheet(
     ws = wb.create_sheet(title="Хронология покупок")
 
     # Headers
-    headers = ["Время", "Стол", "Место", "Сумма", "Выдал"]
+    headers = ["Время", "Стол", "Место", "Сумма", "Тип оплаты", "Выдал"]
     for col, h in enumerate(headers, 1):
         ws.cell(row=1, column=col, value=h)
     _style_header(ws, 1, len(headers))
@@ -583,8 +602,20 @@ def _create_purchases_sheet(
         elif amount < 0:
             cell.fill = MONEY_NEGATIVE_FILL
 
+        # Payment type column
+        payment_type = cast(str, p.payment_type) if p.payment_type else "cash"
+        payment_text = "наличные" if payment_type == "cash" else "кредит"
+        payment_cell = ws.cell(row=row, column=5, value=payment_text)
+        # Apply dark color coding for payment type
+        if payment_type == "cash":
+            payment_cell.fill = CASH_DARK_FILL
+            payment_cell.font = Font(color="FFFFFF", bold=True)
+        else:  # credit
+            payment_cell.fill = CREDIT_DARK_FILL
+            payment_cell.font = Font(color="FFFFFF", bold=True)
+
         username = cast(str, p.created_by.username) if p.created_by else "—"
-        ws.cell(row=row, column=5, value=username)
+        ws.cell(row=row, column=6, value=username)
 
         row += 1
 
@@ -646,12 +677,80 @@ def _create_staff_sheet(
     _auto_width(ws)
 
 
+def _create_balance_adjustments_sheet(
+    wb: Workbook,
+    balance_adjustments: list[CasinoBalanceAdjustment],
+    report_date: dt.date,
+):
+    """Create sheet with balance adjustments for the working day."""
+    ws = wb.create_sheet(title="Корректировки баланса")
+
+    # Headers
+    headers = ["Время", "Тип", "Сумма", "Комментарий", "Создал"]
+    for col, h in enumerate(headers, 1):
+        ws.cell(row=1, column=col, value=h)
+    _style_header(ws, 1, len(headers))
+
+    if not balance_adjustments:
+        ws.cell(row=2, column=1, value="Нет корректировок за выбранную дату")
+        ws.cell(row=2, column=1).font = Font(italic=True)
+        _auto_width(ws)
+        return
+
+    row = 2
+    total_profit = 0
+    total_expense = 0
+
+    for adj in balance_adjustments:
+        time_str = cast(dt.datetime, adj.created_at).strftime("%H:%M:%S")
+        amount = int(cast(int, adj.amount))
+        
+        # Determine type (income/expense)
+        adj_type = "Доход" if amount > 0 else "Расход"
+        
+        ws.cell(row=row, column=1, value=time_str)
+        ws.cell(row=row, column=2, value=adj_type)
+        
+        amount_cell = ws.cell(row=row, column=3, value=amount)
+        if amount > 0:
+            amount_cell.fill = MONEY_POSITIVE_FILL
+            total_profit += amount
+        else:
+            amount_cell.fill = MONEY_NEGATIVE_FILL
+            total_expense += abs(amount)
+        
+        ws.cell(row=row, column=4, value=cast(str, adj.comment))
+        
+        username = cast(str, adj.created_by.username) if adj.created_by else "—"
+        ws.cell(row=row, column=5, value=username)
+        
+        row += 1
+
+    # Totals row
+    row += 1
+    ws.cell(row=row, column=4, value="ИТОГО доходы:")
+    ws.cell(row=row, column=4).font = Font(bold=True)
+    ws.cell(row=row, column=5, value=total_profit)
+    ws.cell(row=row, column=5).font = Font(bold=True)
+    ws.cell(row=row, column=5).fill = MONEY_POSITIVE_FILL
+    row += 1
+    
+    ws.cell(row=row, column=4, value="ИТОГО расходы:")
+    ws.cell(row=row, column=4).font = Font(bold=True)
+    ws.cell(row=row, column=5, value=total_expense)
+    ws.cell(row=row, column=5).font = Font(bold=True)
+    ws.cell(row=row, column=5).fill = MONEY_NEGATIVE_FILL
+
+    _auto_width(ws)
+
+
 def _create_summary_sheet(
     wb: Workbook,
     sessions: list[Session],
     seats_by_session: dict[str, list[Seat]],
     purchases: list[ChipPurchase],
     staff: list[User],
+    balance_adjustments: list[CasinoBalanceAdjustment],
     report_date: dt.date,
 ):
     """Create summary sheet with profit/expense overview."""
@@ -668,6 +767,16 @@ def _create_summary_sheet(
                 total_chip_income_credit += amount
             else:
                 total_chip_income_cash += amount
+
+    # Calculate balance adjustments
+    total_balance_adjustments_profit = 0
+    total_balance_adjustments_expense = 0
+    for adj in balance_adjustments:
+        amount = int(cast(int, adj.amount))
+        if amount > 0:
+            total_balance_adjustments_profit += amount
+        else:
+            total_balance_adjustments_expense += abs(amount)
 
     # Calculate staff salary
     total_salary = 0
@@ -704,6 +813,11 @@ def _create_summary_sheet(
     ws.cell(row=row, column=1, value="Покупка фишек (наличные):")
     ws.cell(row=row, column=2, value=total_chip_income_cash)
     ws.cell(row=row, column=2).fill = MONEY_POSITIVE_FILL
+    row += 1
+
+    ws.cell(row=row, column=1, value="Корректировки баланса (доход):")
+    ws.cell(row=row, column=2, value=total_balance_adjustments_profit)
+    ws.cell(row=row, column=2).fill = MONEY_POSITIVE_FILL
     row += 2
 
     # Expense section
@@ -720,11 +834,16 @@ def _create_summary_sheet(
     ws.cell(row=row, column=1, value="Покупка фишек (кредит):")
     ws.cell(row=row, column=2, value=total_chip_income_credit)
     ws.cell(row=row, column=2).fill = MONEY_NEGATIVE_FILL
+    row += 1
+
+    ws.cell(row=row, column=1, value="Корректировки баланса (расход):")
+    ws.cell(row=row, column=2, value=total_balance_adjustments_expense)
+    ws.cell(row=row, column=2).fill = MONEY_NEGATIVE_FILL
     row += 2
 
     # Net result
-    # Casino profit = cash_buyin - player_balance (what players have left) - salary - credit_buyin
-    casino_result = total_chip_income_cash - total_player_balance - total_salary - total_chip_income_credit
+    # Casino profit = cash_buyin - player_balance (what players have left) - salary - credit_buyin + adj_profit - adj_expense
+    casino_result = total_chip_income_cash - total_player_balance - total_salary - total_chip_income_credit + total_balance_adjustments_profit - total_balance_adjustments_expense
 
     ws.cell(row=row, column=1, value="ИТОГО ЗА ДЕНЬ:")
     ws.cell(row=row, column=1).font = Font(bold=True, size=12)
@@ -743,6 +862,12 @@ def _create_summary_sheet(
 
     ws.cell(row=row, column=1, value="Баланс игроков (остаток фишек):")
     ws.cell(row=row, column=2, value=total_player_balance)
+    row += 1
+
+    ws.cell(row=row, column=1, value="Выдано в кредит:")
+    ws.cell(row=row, column=2, value=total_chip_income_credit)
+    ws.cell(row=row, column=2).fill = CREDIT_DARK_FILL
+    ws.cell(row=row, column=2).font = Font(color="FFFFFF", bold=True)
     row += 1
 
     ws.cell(row=row, column=1, value="Количество сессий:")
