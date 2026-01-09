@@ -31,13 +31,22 @@ interface StaffEntry {
   salary: number;
 }
 
+interface BalanceAdjustment {
+  id: number;
+  created_at: string;
+  amount: number;
+  comment: string;
+  created_by_username: string;
+}
+
 interface SummaryData {
   date: string;
-  income: { buyin_cash: number };
-  expenses: { salaries: number; buyin_credit: number };
+  income: { buyin_cash: number; balance_adjustments: number };
+  expenses: { salaries: number; buyin_credit: number; balance_adjustments: number };
   result: number;
   info: { player_balance: number; total_sessions: number; open_sessions: number };
   staff: StaffEntry[];
+  balance_adjustments: BalanceAdjustment[];
 }
 
 function formatMoney(n: number | undefined | null) {
@@ -164,11 +173,23 @@ export default function SummaryPage() {
             {/* Income */}
             <div className="rounded-xl bg-zinc-900 p-4">
               <div className="text-xs text-zinc-500 mb-2">ДОХОДЫ</div>
-              <div className="flex justify-between items-center">
-                <span className="text-zinc-300">Покупка фишек (наличные)</span>
-                <span className="text-green-400 font-semibold">
-                  +{formatMoney(data.income.buyin_cash)} ₪
-                </span>
+              <div className="space-y-2">
+                <div className="flex justify-between items-center">
+                  <span className="text-zinc-300">Покупка фишек (наличные)</span>
+                  <span className="text-green-400 font-semibold">
+                    +{formatMoney(data.income.buyin_cash)} ₪
+                  </span>
+                </div>
+                {data.balance_adjustments
+                  .filter((adj) => adj.amount > 0)
+                  .map((adj) => (
+                    <div key={adj.id} className="flex justify-between items-center">
+                      <span className="text-zinc-300">{adj.comment}</span>
+                      <span className="text-green-400 font-semibold">
+                        +{formatMoney(adj.amount)} ₪
+                      </span>
+                    </div>
+                  ))}
               </div>
             </div>
 
@@ -188,6 +209,16 @@ export default function SummaryPage() {
                     -{formatMoney(data.expenses.buyin_credit)} ₪
                   </span>
                 </div>
+                {data.balance_adjustments
+                  .filter((adj) => adj.amount < 0)
+                  .map((adj) => (
+                    <div key={adj.id} className="flex justify-between items-center">
+                      <span className="text-zinc-300">{adj.comment}</span>
+                      <span className="text-red-400 font-semibold">
+                        {formatMoney(adj.amount)} ₪
+                      </span>
+                    </div>
+                  ))}
               </div>
             </div>
 

@@ -13,8 +13,10 @@ from typing import Any, cast
 
 from ..core.deps import get_current_user, get_db, require_roles
 from ..core.security import get_password_hash
-from ..models.db import ChipPurchase, Seat, Session, Table, User
+from ..models.db import CasinoBalanceAdjustment, ChipPurchase, Seat, Session, Table, User
 from ..models.schemas import (
+    CasinoBalanceAdjustmentIn,
+    CasinoBalanceAdjustmentOut,
     ChipPurchaseOut,
     TableCreateIn,
     TableOut,
@@ -237,6 +239,77 @@ def list_chip_purchases(
             )
         )
 
+    return out
+
+
+@router.post(
+    "/balance-adjustments",
+    response_model=CasinoBalanceAdjustmentOut,
+    dependencies=[Depends(require_roles("superadmin"))],
+)
+def create_balance_adjustment(
+    payload: CasinoBalanceAdjustmentIn,
+    db: DBSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> CasinoBalanceAdjustmentOut:
+    """Create a new casino balance adjustment (profit or expense)."""
+    if payload.amount == 0:
+        raise HTTPException(status_code=400, detail="Amount cannot be zero")
+    
+    adjustment = CasinoBalanceAdjustment(
+        amount=payload.amount,
+        comment=payload.comment.strip(),
+        created_by_user_id=current_user.id,
+    )
+    db.add(adjustment)
+    db.commit()
+    db.refresh(adjustment)
+    
+    return CasinoBalanceAdjustmentOut(
+        id=int(cast(int, adjustment.id)),
+        created_at=cast(dt.datetime, adjustment.created_at),
+        amount=int(cast(int, adjustment.amount)),
+        comment=cast(str, adjustment.comment),
+        created_by_user_id=int(cast(int, adjustment.created_by_user_id)),
+        created_by_username=current_user.username,
+    )
+
+
+@router.get(
+    "/balance-adjustments",
+    response_model=list[CasinoBalanceAdjustmentOut],
+    dependencies=[Depends(require_roles("superadmin"))],
+)
+def list_balance_adjustments(
+    limit: int = Query(default=50, ge=1, le=200),
+    db: DBSession = Depends(get_db),
+):
+    """List recent balance adjustments."""
+    adjustments = (
+        db.query(CasinoBalanceAdjustment)
+        .options(joinedload(CasinoBalanceAdjustment.created_by))
+        .order_by(CasinoBalanceAdjustment.created_at.desc())
+        .limit(limit)
+        .all()
+    )
+    
+    out: list[CasinoBalanceAdjustmentOut] = []
+    for adj in adjustments:
+        created_by_username = None
+        if adj.created_by is not None:
+            created_by_username = cast(str, adj.created_by.username)
+        
+        out.append(
+            CasinoBalanceAdjustmentOut(
+                id=int(cast(int, adj.id)),
+                created_at=cast(dt.datetime, adj.created_at),
+                amount=int(cast(int, adj.amount)),
+                comment=cast(str, adj.comment),
+                created_by_user_id=int(cast(int, adj.created_by_user_id)),
+                created_by_username=created_by_username,
+            )
+        )
+    
     return out
 
 

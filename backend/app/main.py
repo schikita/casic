@@ -90,6 +90,23 @@ def create_app() -> FastAPI:
                 conn.execute(text("ALTER TABLE chip_purchases ADD COLUMN payment_type VARCHAR(16) NOT NULL DEFAULT 'cash'"))
                 conn.commit()
 
+        # Migrate: create casino_balance_adjustments table if missing
+        with engine.connect() as conn:
+            try:
+                conn.execute(text("SELECT id FROM casino_balance_adjustments LIMIT 1"))
+            except Exception:
+                conn.execute(text("""
+                    CREATE TABLE casino_balance_adjustments (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        created_at DATETIME NOT NULL,
+                        amount INTEGER NOT NULL,
+                        comment TEXT NOT NULL,
+                        created_by_user_id INTEGER NOT NULL,
+                        FOREIGN KEY (created_by_user_id) REFERENCES users(id)
+                    )
+                """))
+                conn.commit()
+
         db = SessionLocal()
         try:
           exists = db.query(User).filter(User.role == "superadmin").first()

@@ -22,7 +22,7 @@ from sqlalchemy.orm import Session as DBSession, joinedload
 from sqlalchemy import func
 
 from ..core.deps import get_current_user, get_db, require_roles
-from ..models.db import ChipPurchase, Seat, Session, Table, User, ChipOp
+from ..models.db import CasinoBalanceAdjustment, ChipPurchase, Seat, Session, Table, User, ChipOp
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
 
@@ -160,12 +160,23 @@ def get_day_summary(
         .all()
     ) if session_ids else []
 
+    # Fetch balance adjustments for the working day
+    balance_adjustments = (
+        db.query(CasinoBalanceAdjustment)
+        .options(joinedload(CasinoBalanceAdjustment.created_by))
+        .filter(CasinoBalanceAdjustment.created_at >= start_time, CasinoBalanceAdjustment.created_at < end_time)
+        .order_by(CasinoBalanceAdjustment.created_at.asc())
+        .all()
+    )
+
     # Fetch all staff
     staff = db.query(User).filter(User.role.in_(["dealer", "waiter"])).all()
 
     # Calculate totals
     total_chip_income_cash = 0  # Cash buyins
     total_chip_income_credit = 0  # Credit buyins (expenses)
+    total_balance_adjustments_profit = 0  # Positive adjustments
+    total_balance_adjustments_expense = 0  # Negative adjustments (absolute value)
 
     for p in purchases:
         amount = int(cast(int, p.amount))
@@ -174,6 +185,26 @@ def get_day_summary(
                 total_chip_income_credit += amount
             else:
                 total_chip_income_cash += amount
+
+    # Process balance adjustments
+    balance_adjustments_list = []
+    for adj in balance_adjustments:
+        amount = int(cast(int, adj.amount))
+        created_by_username = cast(str, adj.created_by.username) if adj.created_by else "—"
+        
+        adjustment_data = {
+            "id": int(cast(int, adj.id)),
+            "created_at": cast(dt.datetime, adj.created_at).isoformat(),
+            "amount": amount,
+            "comment": cast(str, adj.comment),
+            "created_by_username": created_by_username,
+        }
+        balance_adjustments_list.append(adjustment_data)
+        
+        if amount > 0:
+            total_balance_adjustments_profit += amount
+        else:
+            total_balance_adjustments_expense += abs(amount)
 
     # Calculate staff salary
     total_salary = 0
@@ -205,7 +236,7 @@ def get_day_summary(
             total_player_balance += int(cast(int, seat.total))
 
     # Casino result
-    casino_result = total_chip_income_cash - total_player_balance - total_salary - total_chip_income_credit
+    casino_result = total_chip_income_cash - total_player_balance - total_salary - total_chip_income_credit + total_balance_adjustments_profit - total_balance_adjustments_expense
 
     open_sessions = len([s for s in sessions if s.status == "open"])
 
@@ -213,10 +244,12 @@ def get_day_summary(
         "date": date,
         "income": {
             "buyin_cash": total_chip_income_cash,
+            "balance_adjustments": total_balance_adjustments_profit,
         },
         "expenses": {
             "salaries": total_salary,
             "buyin_credit": total_chip_income_credit,
+            "balance_adjustments": total_balance_adjustments_expense,
         },
         "result": casino_result,
         "info": {
@@ -225,6 +258,7 @@ def get_day_summary(
             "open_sessions": open_sessions,
         },
         "staff": staff_details,
+        "balance_adjustments": balance_adjustments_list,
     }
 
 

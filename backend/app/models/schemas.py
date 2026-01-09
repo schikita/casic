@@ -132,3 +132,20 @@ class ChipPurchaseOut(BaseModel):
     created_by_user_id: int | None
     created_by_username: str | None
     payment_type: str = "cash"  # "cash" or "credit"
+
+
+class CasinoBalanceAdjustmentIn(BaseModel):
+    amount: int = Field(..., description="Amount (positive for profit, negative for expense)")
+    comment: str = Field(..., min_length=1, max_length=500, description="Comment explaining the adjustment")
+
+
+class CasinoBalanceAdjustmentOut(BaseModel):
+    id: int
+    created_at: dt.datetime
+    amount: int
+    comment: str
+    created_by_user_id: int
+    created_by_username: str
+
+    class Config:
+        from_attributes = True

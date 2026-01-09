@@ -13,6 +13,7 @@ from sqlalchemy import (
     ForeignKey,
     Integer,
     String,
+    Text,
     UniqueConstraint,
 )
 from sqlalchemy.orm import declarative_base, relationship
@@ -130,3 +131,23 @@ class ChipPurchase(Base):
     __table_args__ = (
         UniqueConstraint("chip_op_id", name="uq_chip_purchases_chip_op_id"),
     )
+
+
+class CasinoBalanceAdjustment(Base):
+    __tablename__ = "casino_balance_adjustments"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    
+    # Timestamp of when the adjustment was made
+    created_at = Column(DateTime, nullable=False, default=dt.datetime.utcnow, index=True)
+    
+    # Amount (positive for profit, negative for expense)
+    amount = Column(Integer, nullable=False)
+    
+    # Text comment explaining the adjustment
+    comment = Column(Text, nullable=False)
+    
+    # User who made the adjustment
+    created_by_user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    
+    created_by = relationship("User")

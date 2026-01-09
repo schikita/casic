@@ -95,7 +95,7 @@ export async function apiFetch(path: string, init: RequestInit = {}) {
     headers.set("authorization", `Bearer ${token}`);
   }
 
-  const res = await fetch(path, {
+  const res = await fetch(API + path, {
     ...init,
     headers,
     credentials: "omit", // ключевое: никаких include

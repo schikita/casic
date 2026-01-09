@@ -53,3 +53,12 @@ export type ChipPurchase = {
   created_by_username: string | null;
   payment_type: "cash" | "credit";
 };
+
+export type CasinoBalanceAdjustment = {
+  id: number;
+  created_at: string;
+  amount: number;
+  comment: string;
+  created_by_user_id: number;
+  created_by_username: string;
+};
