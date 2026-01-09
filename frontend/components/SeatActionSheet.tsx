@@ -30,11 +30,17 @@ export default function SeatActionSheet({
   }, [seat?.seat_no]);
 
   const seatNo = seat?.seat_no ?? 0;
+  const playerChips = seat?.total ?? 0;
 
   const parsedCustom = useMemo(() => {
     const v = Number(customAmount);
     return Number.isFinite(v) ? v : 0;
   }, [customAmount]);
+
+  const isMinusAmountValid = (amount: number) => {
+    if (amount >= 0) return true;
+    return playerChips + amount >= 0;
+  };
 
   if (!open || !seat) return null;
 
@@ -86,10 +92,14 @@ export default function SeatActionSheet({
                   v < 0
                     ? "bg-red-600 active:bg-red-700"
                     : "bg-green-600 active:bg-green-700",
+                  !isMinusAmountValid(v) ? "opacity-50" : "",
                 ].join(" ")}
                 onClick={() => {
+                  if (!isMinusAmountValid(v)) return;
                   onAdd(v);
+                  if (v < 0) onClose();
                 }}
+                disabled={!isMinusAmountValid(v)}
               >
                 {v > 0 ? "+" + String(v) : String(v)}
               </button>
@@ -109,36 +119,24 @@ export default function SeatActionSheet({
             />
             <button
               className="rounded-xl bg-blue-600 text-white px-4 py-3 font-semibold active:bg-blue-700 disabled:opacity-60"
-              disabled={!parsedCustom}
+              disabled={!parsedCustom || !isMinusAmountValid(parsedCustom)}
               onClick={() => {
-                if (!parsedCustom) return;
+                if (!parsedCustom || !isMinusAmountValid(parsedCustom)) return;
                 onAdd(parsedCustom);
                 setCustomAmount("");
+                if (parsedCustom < 0) onClose();
               }}
             >
               Применить
             </button>
           </div>
+          {parsedCustom < 0 && playerChips + parsedCustom < 0 && (
+            <div className="text-xs text-red-600 mt-1">
+              Нельзя снять больше {playerChips} фишек
+            </div>
+          )}
         </div>
 
-        <div className="flex gap-2">
-          <button
-            className="flex-1 rounded-xl bg-zinc-200 px-4 py-3 font-semibold active:bg-zinc-300 disabled:opacity-50"
-            disabled={!seat || seat.total === 0}
-            onClick={async () => {
-              if (!seat || seat.total === 0) return;
-              await onUndo();
-            }}
-          >
-            Undo
-          </button>
-          <button
-            className="flex-1 rounded-xl bg-zinc-900 text-white px-4 py-3 font-semibold active:bg-black"
-            onClick={onClose}
-          >
-            Готово
-          </button>
-        </div>
       </div>
     </div>
   );

@@ -43,6 +43,78 @@ def _get_working_day_boundaries(date: dt.date) -> tuple[dt.datetime, dt.datetime
     return start, end
 
 
+@router.get("/day-summary/preselected-date")
+def get_preselected_date(
+    db: DBSession = Depends(get_db),
+    current_user: Any = Depends(require_roles("superadmin")),
+):
+    """
+    Get the preselected date for the daily summary page.
+    
+    Returns the starting day of:
+    1. Current working day if it's not yet finished (has open sessions)
+    2. Most recent working day if current one is finished but next hasn't started
+    
+    Working day: 20:00 (8 PM) to 18:00 (6 PM) of next day.
+    """
+    now = dt.datetime.utcnow()
+    
+    # Determine current working day
+    # Working day starts at 20:00 and ends at 18:00 next day
+    # So if current time is before 18:00, we're in the working day that started yesterday
+    # If current time is 18:00 or later, we're in the working day that started today
+    if now.hour < 18:
+        # Before 18:00 - we're in the working day that started yesterday
+        working_day_start = now.date() - dt.timedelta(days=1)
+    else:
+        # 18:00 or later - we're in the working day that started today
+        working_day_start = now.date()
+    
+    # Get working day boundaries
+    start_time, end_time = _get_working_day_boundaries(working_day_start)
+    
+    # Check for open sessions in current working day
+    open_sessions = (
+        db.query(Session)
+        .filter(Session.created_at >= start_time, Session.created_at < end_time)
+        .filter(Session.status == "open")
+        .first()
+    )
+    
+    if open_sessions:
+        # Current working day is not finished
+        return {"date": working_day_start.isoformat()}
+    
+    # Check if current working day has any sessions at all
+    any_sessions = (
+        db.query(Session)
+        .filter(Session.created_at >= start_time, Session.created_at < end_time)
+        .first()
+    )
+    
+    if any_sessions:
+        # Current working day is finished (all sessions closed)
+        return {"date": working_day_start.isoformat()}
+    
+    # No sessions in current working day - find most recent working day with sessions
+    # Look back up to 7 days
+    for days_back in range(1, 8):
+        prev_day = working_day_start - dt.timedelta(days=days_back)
+        prev_start, prev_end = _get_working_day_boundaries(prev_day)
+        
+        prev_sessions = (
+            db.query(Session)
+            .filter(Session.created_at >= prev_start, Session.created_at < prev_end)
+            .first()
+        )
+        
+        if prev_sessions:
+            return {"date": prev_day.isoformat()}
+    
+    # No sessions found in the last 7 days, return current working day
+    return {"date": working_day_start.isoformat()}
+
+
 @router.get("/day-summary")
 def get_day_summary(
     date: str = Query(..., description="Date in YYYY-MM-DD format"),

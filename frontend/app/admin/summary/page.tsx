@@ -14,6 +14,15 @@ function todayLocalISO() {
   return `${yyyy}-${mm}-${dd}`;
 }
 
+async function fetchPreselectedDate(): Promise<string> {
+  const res = await apiFetch("/api/admin/day-summary/preselected-date");
+  if (!res.ok) {
+    throw new Error("Failed to fetch preselected date");
+  }
+  const data = await res.json();
+  return data.date;
+}
+
 interface StaffEntry {
   name: string;
   role: string;
@@ -24,8 +33,8 @@ interface StaffEntry {
 
 interface SummaryData {
   date: string;
-  income: { buyin: number };
-  expenses: { salaries: number; cashout: number };
+  income: { buyin_cash: number };
+  expenses: { salaries: number; buyin_credit: number };
   result: number;
   info: { player_balance: number; total_sessions: number; open_sessions: number };
   staff: StaffEntry[];
@@ -44,6 +53,7 @@ export default function SummaryPage() {
   const [data, setData] = useState<SummaryData | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [initialDateLoaded, setInitialDateLoaded] = useState(false);
 
   async function loadSummary(d: string) {
     if (!d) return;
@@ -56,8 +66,8 @@ export default function SummaryPage() {
         throw new Error(err.detail || "Ошибка загрузки");
       }
       setData(await res.json());
-    } catch (e: any) {
-      setError(e?.message ?? "Ошибка");
+    } catch (e: unknown) {
+      setError((e as Error)?.message ?? "Ошибка");
       setData(null);
     } finally {
       setLoading(false);
@@ -65,10 +75,24 @@ export default function SummaryPage() {
   }
 
   useEffect(() => {
-    if (user?.role === "superadmin" && date) {
+    if (user?.role === "superadmin" && !initialDateLoaded) {
+      fetchPreselectedDate()
+        .then((preselectedDate) => {
+          setDate(preselectedDate);
+          setInitialDateLoaded(true);
+        })
+        .catch(() => {
+          // Fallback to today if preselected date fetch fails
+          setInitialDateLoaded(true);
+        });
+    }
+  }, [user, initialDateLoaded]);
+
+  useEffect(() => {
+    if (user?.role === "superadmin" && date && initialDateLoaded) {
       loadSummary(date);
     }
-  }, [user, date]);
+  }, [user, date, initialDateLoaded]);
 
   if (!user) {
     return (
@@ -141,9 +165,9 @@ export default function SummaryPage() {
             <div className="rounded-xl bg-zinc-900 p-4">
               <div className="text-xs text-zinc-500 mb-2">ДОХОДЫ</div>
               <div className="flex justify-between items-center">
-                <span className="text-zinc-300">Покупка фишек (buyin)</span>
+                <span className="text-zinc-300">Покупка фишек (наличные)</span>
                 <span className="text-green-400 font-semibold">
-                  +{formatMoney(data.income.buyin)} ₪
+                  +{formatMoney(data.income.buyin_cash)} ₪
                 </span>
               </div>
             </div>
@@ -159,9 +183,9 @@ export default function SummaryPage() {
                   </span>
                 </div>
                 <div className="flex justify-between items-center">
-                  <span className="text-zinc-300">Обналичено (cashout)</span>
+                  <span className="text-zinc-300">Покупка фишек (кредит)</span>
                   <span className="text-red-400 font-semibold">
-                    -{formatMoney(data.expenses.cashout)} ₪
+                    -{formatMoney(data.expenses.buyin_credit)} ₪
                   </span>
                 </div>
               </div>

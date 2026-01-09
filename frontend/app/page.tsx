@@ -196,16 +196,15 @@ export default function HomePage() {
       setShowCashModal(true);
     } else {
       // For cashout, process directly without payment type
-      confirmChipPurchase("cash");
+      confirmChipPurchase(amount, "cash");
     }
   }
 
-  async function confirmChipPurchase(paymentType: "cash" | "credit") {
-    if (!session || !activeSeatNo || pendingChipAmount === null) return;
+  async function confirmChipPurchase(amount: number, paymentType: "cash" | "credit") {
+    if (!session || !activeSeatNo) return;
     setError(null);
     setBusy(true);
     try {
-      const amount = pendingChipAmount;
       const body: any = {
         seat_no: activeSeatNo,
         amount: amount,
@@ -234,6 +233,7 @@ export default function HomePage() {
 
       setShowCashModal(false);
       setPendingChipAmount(null);
+      setActiveSeatNo(null); // Close the SeatActionSheet
     } catch (e) {
       setError(getErrorMessage(e) || "Ошибка");
     } finally {
@@ -483,8 +483,8 @@ export default function HomePage() {
               amount={pendingChipAmount ?? 0}
               playerName={activeSeat?.player_name ?? null}
               seatNo={activeSeatNo ?? 0}
-              onCash={() => confirmChipPurchase("cash")}
-              onCredit={() => confirmChipPurchase("credit")}
+              onCash={() => pendingChipAmount && confirmChipPurchase(pendingChipAmount, "cash")}
+              onCredit={() => pendingChipAmount && confirmChipPurchase(pendingChipAmount, "credit")}
               onCancel={() => {
                 setShowCashModal(false);
                 setPendingChipAmount(null);
