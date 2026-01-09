@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from "react";
 import TopMenu from "@/components/TopMenu";
+import AdminNavigation from "@/components/AdminNavigation";
 import { RequireAuth } from "@/components/auth/RequireAuth";
 import { useAuth } from "@/components/auth/AuthContext";
 import { apiFetch } from "@/lib/api";
@@ -143,6 +144,7 @@ export default function BalanceAdjustmentsPage() {
 
         <div className="flex items-center justify-between mb-3">
           <div className="text-xl font-bold text-white">Корректировки баланса</div>
+          <AdminNavigation currentPath="/admin/balance-adjustments" />
         </div>
 
         {error && (
@@ -155,7 +157,7 @@ export default function BalanceAdjustmentsPage() {
         {!showAddForm && (
           <button
             onClick={() => setShowAddForm(true)}
-            className="w-full rounded-xl bg-green-600 text-white px-4 py-3 font-semibold mb-3 active:bg-green-700"
+            className="w-full rounded-xl bg-green-600 text-white px-4 py-3 font-semibold mb-3 active:bg-green-700 disabled:opacity-60 hover:bg-green-700/90 focus:outline-none focus:ring-2 focus:ring-white/15"
           >
             + Добавить корректировку
           </button>
@@ -174,7 +176,7 @@ export default function BalanceAdjustmentsPage() {
                   type="number"
                   value={amount}
                   onChange={(e) => setAmount(e.target.value)}
-                  className="w-full rounded-lg border border-zinc-700 bg-zinc-800 text-white px-3 py-2"
+                  className="w-full rounded-xl border border-zinc-700 bg-zinc-800 text-white px-3 py-3 text-base focus:outline-none focus:ring-2 focus:ring-white/15 placeholder-zinc-500"
                   placeholder="Например: 1000 или -500"
                   disabled={submitting}
                 />
@@ -186,7 +188,7 @@ export default function BalanceAdjustmentsPage() {
                 <textarea
                   value={comment}
                   onChange={(e) => setComment(e.target.value)}
-                  className="w-full rounded-lg border border-zinc-700 bg-zinc-800 text-white px-3 py-2"
+                  className="w-full rounded-xl border border-zinc-700 bg-zinc-800 text-white px-3 py-3 text-base focus:outline-none focus:ring-2 focus:ring-white/15 placeholder-zinc-500"
                   rows={3}
                   placeholder="Описание корректировки"
                   disabled={submitting}
@@ -196,7 +198,7 @@ export default function BalanceAdjustmentsPage() {
                 <button
                   type="submit"
                   disabled={submitting}
-                  className="flex-1 rounded-xl bg-green-600 text-white px-4 py-2 font-semibold active:bg-green-700 disabled:opacity-50"
+                  className="flex-1 rounded-xl bg-green-600 text-white px-4 py-2 font-semibold active:bg-green-700 disabled:opacity-50 hover:bg-green-700/90 focus:outline-none focus:ring-2 focus:ring-white/15"
                 >
                   {submitting ? "Сохранение..." : "Сохранить"}
                 </button>
@@ -209,7 +211,7 @@ export default function BalanceAdjustmentsPage() {
                     setError(null);
                   }}
                   disabled={submitting}
-                  className="flex-1 rounded-xl bg-zinc-700 text-white px-4 py-2 font-semibold active:bg-zinc-600 disabled:opacity-50"
+                  className="flex-1 rounded-xl bg-zinc-700 text-white px-4 py-2 font-semibold active:bg-zinc-600 disabled:opacity-50 hover:bg-zinc-600/90 focus:outline-none focus:ring-2 focus:ring-white/15"
                 >
                   Отмена
                 </button>
@@ -221,11 +223,15 @@ export default function BalanceAdjustmentsPage() {
         {/* List of adjustments */}
         <div className="space-y-2">
           {loading && (
-            <div className="text-center text-zinc-400 py-8">Загрузка...</div>
+            <div className="fixed bottom-4 left-0 right-0 flex justify-center pointer-events-none">
+              <div className="rounded-xl bg-black/80 text-white px-4 py-2 text-sm">
+                Загрузка…
+              </div>
+            </div>
           )}
 
           {!loading && adjustments.length === 0 && (
-            <div className="text-center text-zinc-500 py-8">
+            <div className="rounded-xl bg-zinc-900 text-white/70 px-3 py-3 text-sm rounded-xl">
               Нет корректировок
             </div>
           )}
@@ -237,13 +243,13 @@ export default function BalanceAdjustmentsPage() {
             >
               <div className="flex justify-between items-start mb-2">
                 <div className="flex-1">
-                  <div className="text-xs text-zinc-500 mb-1">
+                  <div className="text-xs text-zinc-400 mb-1">
                     {formatDateTime(adj.created_at)}
                   </div>
                   <div className="text-sm text-zinc-300">
                     {adj.comment}
                   </div>
-                  <div className="text-xs text-zinc-500 mt-1">
+                  <div className="text-xs text-zinc-400 mt-1">
                     {adj.created_by_username}
                   </div>
                 </div>

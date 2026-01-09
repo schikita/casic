@@ -10,10 +10,6 @@ export default function TopMenu() {
   const router = useRouter();
 
   const canSuperadmin = useMemo(() => user?.role === "superadmin", [user]);
-  const canExport = useMemo(
-    () => user?.role === "superadmin" || user?.role === "table_admin",
-    [user]
-  );
 
   function go(path: string) {
     setOpen(false);
@@ -24,7 +20,7 @@ export default function TopMenu() {
     <>
       <div className="flex items-center justify-between mb-3">
         <button
-          className="rounded-xl px-3 py-2 bg-zinc-100 text-black active:bg-zinc-200 text-sm"
+          className="rounded-xl px-3 py-2 bg-zinc-100 text-black active:bg-zinc-200 text-sm focus:outline-none focus:ring-2 focus:ring-zinc-400"
           onClick={() => setOpen(true)}
         >
           Меню
@@ -48,7 +44,7 @@ export default function TopMenu() {
 
             <div className="grid gap-2">
               <button
-                className="rounded-xl bg-zinc-100 px-4 py-3 text-left text-gray-400"
+                className="rounded-xl bg-zinc-100 px-4 py-3 text-left text-zinc-700 focus:outline-none focus:ring-2 focus:ring-zinc-400"
                 onClick={() => go("/")}
               >
                 Стол
@@ -56,60 +52,15 @@ export default function TopMenu() {
 
               {canSuperadmin && (
                 <button
-                  className="rounded-xl bg-zinc-100 px-4 py-3 text-left text-gray-400"
+                  className="rounded-xl bg-zinc-100 px-4 py-3 text-left text-zinc-700 focus:outline-none focus:ring-2 focus:ring-zinc-400"
                   onClick={() => go("/admin")}
                 >
-                  Админка
-                </button>
-              )}
-
-              {canExport && (
-                <button
-                  className="rounded-xl bg-zinc-100 px-4 py-3 text-left text-gray-400"
-                  onClick={() => go("/admin/export")}
-                >
-                  Выгрузка (CSV/TSV)
-                </button>
-              )}
-
-              {canExport && (
-                <button
-                  className="rounded-xl bg-zinc-100 px-4 py-3 text-left text-gray-400"
-                  onClick={() => go("/admin/sessions")}
-                >
-                  История сессий
-                </button>
-              )}
-
-              {canSuperadmin && (
-                <button
-                  className="rounded-xl bg-zinc-100 px-4 py-3 text-left text-gray-400"
-                  onClick={() => go("/admin/summary")}
-                >
-                  Итоги дня
-                </button>
-              )}
-
-              {canSuperadmin && (
-                <button
-                  className="rounded-xl bg-zinc-100 px-4 py-3 text-left text-gray-400"
-                  onClick={() => go("/admin/balance-adjustments")}
-                >
-                  Корректировки баланса
-                </button>
-              )}
-
-              {canSuperadmin && (
-                <button
-                  className="rounded-xl bg-zinc-100 px-4 py-3 text-left text-gray-400"
-                  onClick={() => go("/admin/report")}
-                >
-                  Отчёт дня (XLSX)
+                  Админ
                 </button>
               )}
 
               <button
-                className="rounded-xl bg-zinc-900 text-white px-4 py-3 text-left"
+                className="rounded-xl bg-zinc-900 text-white px-4 py-3 text-left focus:outline-none focus:ring-2 focus:ring-white/15"
                 onClick={() => {
                   logout();
                   go("/login");
@@ -119,7 +70,7 @@ export default function TopMenu() {
               </button>
 
               <button
-                className="rounded-xl bg-white border px-4 py-3 text-left text-gray-400"
+                className="rounded-xl bg-white border px-4 py-3 text-left text-zinc-500 focus:outline-none focus:ring-2 focus:ring-zinc-400"
                 onClick={() => setOpen(false)}
               >
                 Закрыть

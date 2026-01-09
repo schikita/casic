@@ -25,9 +25,9 @@ export default function SeatGrid({
             className={[
               "text-lg font-bold tabular-nums",
               seat.total < 0
-                ? "text-red-600"
+                ? "text-red-500"
                 : seat.total > 0
-                ? "text-green-700"
+                ? "text-green-500"
                 : "text-zinc-800",
             ].join(" ")}
           >

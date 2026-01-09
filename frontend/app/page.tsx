@@ -332,9 +332,9 @@ export default function HomePage() {
       <main className="p-3 max-w-md mx-auto">
         <TopMenu />
 
-        <div className="flex items-start justify-between mb-2">
+        <div className="flex items-start justify-between mb-3">
           <div>
-            <div className="text-xl font-bold text-white">Стол</div>
+            <div className="text-xl font-bold text-black">Стол</div>
             <div className="text-xs text-zinc-500">
               {activeTable ? activeTable.name : ""}
               {session
@@ -345,7 +345,7 @@ export default function HomePage() {
 
           {user?.role === "superadmin" && (
             <select
-              className="rounded-xl border px-2 py-2 text-sm text-black bg-zinc-100"
+              className="rounded-xl border border-zinc-300 bg-white text-black px-3 py-3 text-base focus:outline-none focus:ring-2 focus:ring-zinc-400"
               value={tableId ?? ""}
               onChange={(e) => {
                 const id = Number(e.target.value);
@@ -366,7 +366,7 @@ export default function HomePage() {
         </div>
 
         {error && (
-          <div className="mb-3 rounded-xl bg-red-50 text-red-700 px-3 py-2 text-sm">
+          <div className="mb-3 rounded-xl bg-red-900/50 text-red-200 px-3 py-2 text-sm">
             {error}
           </div>
         )}
@@ -378,7 +378,7 @@ export default function HomePage() {
         )}
 
         {!loading && !tableId && (
-          <div className="rounded-xl bg-zinc-100 px-3 py-3 text-sm text-zinc-700">
+          <div className="rounded-xl bg-zinc-100 text-zinc-700 px-3 py-3 text-sm rounded-xl">
             Нет доступного стола. Назначьте table_id админу стола или создайте
             стол в админке.
           </div>
@@ -388,7 +388,7 @@ export default function HomePage() {
           <>
             {canStartSession ? (
               <button
-                className="w-full rounded-xl bg-green-600 text-white py-4 font-bold text-lg active:bg-green-700 disabled:opacity-60"
+                className="w-full rounded-xl bg-green-600 text-white py-4 font-bold text-lg active:bg-green-700 disabled:opacity-60 hover:bg-green-700/90"
                 onClick={() => setShowStartModal(true)}
                 disabled={busy}
               >
@@ -421,7 +421,7 @@ export default function HomePage() {
               </div>
             </div>
 
-            <div className="mb-3 rounded-xl bg-zinc-100 px-4 py-3 border border-zinc-200">
+            <div className="mb-3 rounded-xl bg-zinc-100 p-4 border border-zinc-200">
               <div className="grid grid-cols-2 gap-3 mb-3">
                 <div>
                   <div className="text-xs font-medium text-zinc-600 mb-1">
@@ -448,7 +448,7 @@ export default function HomePage() {
 
             <div className="flex gap-2 mb-3">
               <button
-                className="flex-1 rounded-xl px-3 py-2 bg-black text-white active:bg-zinc-800 text-sm disabled:opacity-50"
+                className="flex-1 rounded-xl px-3 py-2 bg-black text-white active:bg-zinc-800 text-sm disabled:opacity-50 hover:bg-zinc-800/90"
                 onClick={() => tableId && loadOpenSession(tableId)}
                 disabled={loading || busy}
               >
@@ -456,7 +456,7 @@ export default function HomePage() {
               </button>
 
               <button
-                className="flex-1 rounded-xl px-3 py-2 bg-zinc-100 text-black active:bg-zinc-200 text-sm disabled:opacity-50"
+                className="flex-1 rounded-xl px-3 py-2 bg-zinc-100 text-black active:bg-zinc-200 text-sm disabled:opacity-50 hover:bg-zinc-200/90"
                 onClick={showCloseConfirmation}
                 disabled={busy}
               >

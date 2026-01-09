@@ -1,9 +1,11 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { Suspense, useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import { RequireAuth } from "@/components/auth/RequireAuth";
 import { useAuth } from "@/components/auth/AuthContext";
 import TopMenu from "@/components/TopMenu";
+import AdminNavigation from "@/components/AdminNavigation";
 import { apiJson } from "@/lib/api";
 
 type UserRole = "superadmin" | "table_admin" | "dealer" | "waiter";
@@ -58,15 +60,24 @@ function fmtDateTime(iso: string) {
 }
 
 const inputDark =
-  "rounded-xl border border-zinc-800 bg-zinc-950 px-3 py-3 text-base text-white placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-white/15";
+  "rounded-xl border border-zinc-700 bg-zinc-800 text-white px-3 py-3 text-base focus:outline-none focus:ring-2 focus:ring-white/15 placeholder-zinc-500";
 
 const selectDark =
-  "rounded-xl border border-zinc-800 bg-zinc-950 px-3 py-3 text-base text-white focus:outline-none focus:ring-2 focus:ring-white/15";
+  "rounded-xl border border-zinc-700 bg-zinc-800 text-white px-3 py-3 text-base focus:outline-none focus:ring-2 focus:ring-white/15";
 
-export default function AdminPage() {
+function AdminPageContent() {
   const { user } = useAuth();
-
+  const searchParams = useSearchParams();
+  
   const [tab, setTab] = useState<"tables" | "users" | "purchases">("tables");
+
+  // Read tab from URL query parameter
+  useEffect(() => {
+    const tabFromUrl = searchParams.get("tab") as "tables" | "users" | "purchases" | null;
+    if (tabFromUrl) {
+      setTab(tabFromUrl);
+    }
+  }, [searchParams]);
 
   const [tables, setTables] = useState<Table[]>([]);
   const [users, setUsers] = useState<User[]>([]);
@@ -402,21 +413,24 @@ export default function AdminPage() {
           <div>
             <div className="text-xl font-bold text-white">Админка</div>
             <div className="text-xs text-zinc-400">
-              Столы, пользователи, покупки фишек
+              Управление системой
             </div>
           </div>
 
-          <button
-            className="rounded-xl bg-black text-white px-3 py-2 text-sm disabled:opacity-60"
-            onClick={() => refreshCurrentTab().catch(() => {})}
-            disabled={busy}
-          >
-            Обновить
-          </button>
+          <div className="flex gap-2">
+            <button
+              className="rounded-xl bg-black text-white px-3 py-2 text-sm disabled:opacity-60 hover:bg-zinc-800/90"
+              onClick={() => refreshCurrentTab().catch(() => {})}
+              disabled={busy}
+            >
+              Обновить
+            </button>
+            <AdminNavigation currentPath="/admin" activeTab={tab} />
+          </div>
         </div>
 
         {error && (
-          <div className="mb-3 rounded-xl bg-red-50 text-red-700 px-3 py-2 text-sm">
+          <div className="mb-3 rounded-xl bg-red-900/50 text-red-200 px-3 py-2 text-sm">
             {error}
           </div>
         )}
@@ -426,47 +440,6 @@ export default function AdminPage() {
             {ok}
           </div>
         )}
-
-        <div className="flex gap-2 mb-3">
-          <button
-            className={
-              "flex-1 rounded-xl px-4 py-3 text-left " +
-              (tab === "tables"
-                ? "bg-zinc-900 text-white"
-                : "bg-black text-white/80 hover:text-white")
-            }
-            onClick={() => setTab("tables")}
-          >
-            <div className="font-semibold">Столы</div>
-            <div className="text-xs text-white/60">создание и список</div>
-          </button>
-
-          <button
-            className={
-              "flex-1 rounded-xl px-4 py-3 text-left " +
-              (tab === "users"
-                ? "bg-zinc-900 text-white"
-                : "bg-black text-white/80 hover:text-white")
-            }
-            onClick={() => setTab("users")}
-          >
-            <div className="font-semibold">Пользователи</div>
-            <div className="text-xs text-white/60">роли, стол, пароль</div>
-          </button>
-
-          <button
-            className={
-              "flex-1 rounded-xl px-4 py-3 text-left " +
-              (tab === "purchases"
-                ? "bg-zinc-900 text-white"
-                : "bg-black text-white/80 hover:text-white")
-            }
-            onClick={() => setTab("purchases")}
-          >
-            <div className="font-semibold">Покупки</div>
-            <div className="text-xs text-white/60">последние операции</div>
-          </button>
-        </div>
 
         {tab === "tables" && (
           <>
@@ -492,7 +465,7 @@ export default function AdminPage() {
                 />
 
                 <button
-                  className="rounded-xl bg-green-600 text-white px-4 py-3 font-semibold disabled:opacity-60"
+                  className="rounded-xl bg-green-600 text-white px-4 py-3 font-semibold disabled:opacity-60 hover:bg-green-700/90"
                   onClick={createTable}
                   disabled={busy || !isNonEmpty(tableName)}
                 >
@@ -525,7 +498,7 @@ export default function AdminPage() {
                         <div className="font-semibold">{t.name}</div>
                         <div className="text-xs text-white/60">ID: {t.id}</div>
                       </div>
-                      <div className="text-sm text-white/70">
+                      <div className="text-sm text-zinc-300">
                         Мест:{" "}
                         <span className="text-white">{t.seats_count}</span>
                       </div>
@@ -604,7 +577,7 @@ export default function AdminPage() {
                 )}
 
                 <button
-                  className="rounded-xl bg-green-600 text-white px-4 py-3 font-semibold disabled:opacity-60"
+                  className="rounded-xl bg-green-600 text-white px-4 py-3 font-semibold disabled:opacity-60 hover:bg-green-700/90"
                   onClick={createUser}
                   disabled={
                     busy ||
@@ -662,7 +635,7 @@ export default function AdminPage() {
                                 ID {u.id}
                               </span>
                             </div>
-                            <div className="text-xs text-white/60">
+                            <div className="text-xs text-zinc-400">
                               Текущая роль: {roleLabel(u.role)}
                               {u.table_id !== null && table && (
                                 <span className="ml-2">
@@ -743,7 +716,7 @@ export default function AdminPage() {
 
                               <div className="flex gap-2">
                                 <button
-                                  className="flex-1 rounded-xl bg-zinc-900 text-white px-4 py-3 font-semibold disabled:opacity-60"
+                                  className="flex-1 rounded-xl bg-zinc-900 text-white px-4 py-3 font-semibold disabled:opacity-60 hover:bg-black/90"
                                   onClick={() => saveUser(u.id)}
                                   disabled={busy}
                                 >
@@ -752,7 +725,7 @@ export default function AdminPage() {
 
                                 {u.is_active && u.role !== "superadmin" && (
                                   <button
-                                    className="rounded-xl bg-red-600/20 text-red-300 px-4 py-3 font-semibold disabled:opacity-60 hover:bg-red-600/30"
+                                    className="rounded-xl bg-red-600 text-white px-4 py-3 font-semibold disabled:opacity-60 hover:bg-red-700/90"
                                     onClick={() => setDeleteConfirmUserId(u.id)}
                                     disabled={busy}
                                     title="Удалить пользователя"
@@ -787,14 +760,14 @@ export default function AdminPage() {
                   </div>
                   <div className="flex gap-2">
                     <button
-                      className="flex-1 rounded-xl bg-zinc-800 text-white px-4 py-3 font-semibold disabled:opacity-60"
+                      className="flex-1 rounded-xl bg-zinc-800 text-white px-4 py-3 font-semibold disabled:opacity-60 hover:bg-zinc-700/90"
                       onClick={() => setDeleteConfirmUserId(null)}
                       disabled={busy}
                     >
                       Отмена
                     </button>
                     <button
-                      className="flex-1 rounded-xl bg-red-600 text-white px-4 py-3 font-semibold disabled:opacity-60"
+                      className="flex-1 rounded-xl bg-red-600 text-white px-4 py-3 font-semibold disabled:opacity-60 hover:bg-red-700/90"
                       onClick={() => deleteUser(deleteConfirmUserId)}
                       disabled={busy}
                     >
@@ -826,7 +799,7 @@ export default function AdminPage() {
                     placeholder="Лимит (например 100)"
                   />
                   <button
-                    className="rounded-xl bg-green-600 text-white px-4 py-3 font-semibold disabled:opacity-60"
+                    className="rounded-xl bg-green-600 text-white px-4 py-3 font-semibold disabled:opacity-60 hover:bg-green-700/90"
                     onClick={() => loadPurchasesOnly().catch(() => {})}
                     disabled={busy}
                   >
@@ -868,7 +841,7 @@ export default function AdminPage() {
                         <div className="text-xs text-white/60">#{p.id}</div>
                       </div>
 
-                      <div className="mt-1 text-sm text-white/80">
+                      <div className="mt-1 text-sm text-zinc-300">
                         Место: <span className="text-white">{p.seat_no}</span> •
                         Сумма:{" "}
                         <span className="text-white font-semibold">
@@ -876,7 +849,7 @@ export default function AdminPage() {
                         </span>
                       </div>
 
-                      <div className="mt-1 text-xs text-white/60">
+                      <div className="mt-1 text-xs text-zinc-400">
                         {fmtDateTime(p.created_at)}
                         {" • "}
                         Выдал:{" "}
@@ -904,6 +877,14 @@ export default function AdminPage() {
         )}
       </main>
     </RequireAuth>
+  );
+}
+
+export default function AdminPage() {
+  return (
+    <Suspense fallback={<div className="p-4 text-white">Загрузка…</div>}>
+      <AdminPageContent />
+    </Suspense>
   );
 }
 

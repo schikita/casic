@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from "react";
 import TopMenu from "@/components/TopMenu";
+import AdminNavigation from "@/components/AdminNavigation";
 import { RequireAuth } from "@/components/auth/RequireAuth";
 import { useAuth } from "@/components/auth/AuthContext";
 import { apiFetch } from "@/lib/api";
@@ -137,13 +138,16 @@ export default function SummaryPage() {
 
         <div className="flex items-center justify-between mb-3">
           <div className="text-xl font-bold text-white">Итоги дня</div>
-          <input
-            type="date"
-            value={date}
-            onChange={(e) => setDate(e.target.value)}
-            className="rounded-lg border px-2 py-1 text-sm"
-            disabled={loading}
-          />
+          <div className="flex gap-2">
+            <input
+              type="date"
+              value={date}
+              onChange={(e) => setDate(e.target.value)}
+              className="rounded-xl border border-zinc-700 bg-zinc-800 text-white px-3 py-3 text-base focus:outline-none focus:ring-2 focus:ring-white/15 placeholder-zinc-500"
+              disabled={loading}
+            />
+            <AdminNavigation currentPath="/admin/summary" />
+          </div>
         </div>
 
         {error && (
@@ -153,7 +157,11 @@ export default function SummaryPage() {
         )}
 
         {loading && (
-          <div className="text-center text-zinc-400 py-8">Загрузка...</div>
+          <div className="fixed bottom-4 left-0 right-0 flex justify-center pointer-events-none">
+            <div className="rounded-xl bg-black/80 text-white px-4 py-2 text-sm">
+              Загрузка…
+            </div>
+          </div>
         )}
 
         {data && !loading && (
@@ -174,22 +182,22 @@ export default function SummaryPage() {
             <div className="rounded-xl bg-zinc-900 p-4">
               <div className="text-xs text-zinc-500 mb-2">ДОХОДЫ</div>
               <div className="space-y-2">
-                <div className="flex justify-between items-center">
-                  <span className="text-zinc-300">Покупка фишек (наличные)</span>
-                  <span className="text-green-400 font-semibold">
-                    +{formatMoney(data.income.buyin_cash)} ₪
-                  </span>
-                </div>
-                {data.balance_adjustments
-                  .filter((adj) => adj.amount > 0)
-                  .map((adj) => (
-                    <div key={adj.id} className="flex justify-between items-center">
-                      <span className="text-zinc-300">{adj.comment}</span>
-                      <span className="text-green-400 font-semibold">
-                        +{formatMoney(adj.amount)} ₪
-                      </span>
-                    </div>
-                  ))}
+              <div className="flex justify-between items-center">
+                <span className="text-zinc-300">Покупка фишек (наличные)</span>
+                <span className="text-green-400 font-semibold">
+                  +{formatMoney(data.income.buyin_cash)}
+                </span>
+              </div>
+              {data.balance_adjustments
+                .filter((adj) => adj.amount > 0)
+                .map((adj) => (
+                  <div key={adj.id} className="flex justify-between items-center">
+                    <span className="text-zinc-300">{adj.comment}</span>
+                    <span className="text-green-400 font-semibold">
+                      +{formatMoney(adj.amount)}
+                    </span>
+                  </div>
+                ))}
               </div>
             </div>
 
@@ -197,28 +205,28 @@ export default function SummaryPage() {
             <div className="rounded-xl bg-zinc-900 p-4">
               <div className="text-xs text-zinc-500 mb-2">РАСХОДЫ</div>
               <div className="space-y-2">
-                <div className="flex justify-between items-center">
-                  <span className="text-zinc-300">Зарплаты</span>
-                  <span className="text-red-400 font-semibold">
-                    -{formatMoney(data.expenses.salaries)} ₪
-                  </span>
-                </div>
-                <div className="flex justify-between items-center">
-                  <span className="text-zinc-300">Покупка фишек (кредит)</span>
-                  <span className="text-red-400 font-semibold">
-                    -{formatMoney(data.expenses.buyin_credit)} ₪
-                  </span>
-                </div>
-                {data.balance_adjustments
-                  .filter((adj) => adj.amount < 0)
-                  .map((adj) => (
-                    <div key={adj.id} className="flex justify-between items-center">
-                      <span className="text-zinc-300">{adj.comment}</span>
-                      <span className="text-red-400 font-semibold">
-                        {formatMoney(adj.amount)} ₪
-                      </span>
-                    </div>
-                  ))}
+              <div className="flex justify-between items-center">
+                <span className="text-zinc-300">Зарплаты</span>
+                <span className="text-red-400 font-semibold">
+                  -{formatMoney(data.expenses.salaries)}
+                </span>
+              </div>
+              <div className="flex justify-between items-center">
+                <span className="text-zinc-300">Покупка фишек (кредит)</span>
+                <span className="text-red-400 font-semibold">
+                  -{formatMoney(data.expenses.buyin_credit)}
+                </span>
+              </div>
+              {data.balance_adjustments
+                .filter((adj) => adj.amount < 0)
+                .map((adj) => (
+                  <div key={adj.id} className="flex justify-between items-center">
+                    <span className="text-zinc-300">{adj.comment}</span>
+                    <span className="text-red-400 font-semibold">
+                      {formatMoney(adj.amount)}
+                    </span>
+                  </div>
+                ))}
               </div>
             </div>
 
@@ -226,12 +234,12 @@ export default function SummaryPage() {
             <div className="rounded-xl bg-zinc-900 p-4">
               <div className="text-xs text-zinc-500 mb-2">СПРАВОЧНО</div>
               <div className="space-y-2 text-sm">
-                <div className="flex justify-between items-center">
-                  <span className="text-zinc-400">Баланс игроков</span>
-                  <span className="text-zinc-300">
-                    {formatMoney(data.info.player_balance)} ₪
-                  </span>
-                </div>
+              <div className="flex justify-between items-center">
+                <span className="text-zinc-400">Баланс игроков</span>
+                <span className="text-zinc-300">
+                  {formatMoney(data.info.player_balance)}
+                </span>
+              </div>
                 <div className="flex justify-between items-center">
                   <span className="text-zinc-400">Всего сессий</span>
                   <span className="text-zinc-300">{data.info.total_sessions}</span>
@@ -252,17 +260,17 @@ export default function SummaryPage() {
                     <div key={i} className="border-b border-zinc-800 pb-2 last:border-0 last:pb-0">
                       <div className="flex justify-between items-center">
                         <div>
-                          <span className="text-zinc-200">{s.name}</span>
-                          <span className="text-xs text-zinc-500 ml-2">
+                          <span className="text-white">{s.name}</span>
+                          <span className="text-xs text-zinc-400 ml-2">
                             {s.role === "dealer" ? "дилер" : "официант"}
                           </span>
                         </div>
                         <span className="text-red-400 font-semibold">
-                          -{formatMoney(s.salary)} ₪
+                          -{formatMoney(s.salary)}
                         </span>
                       </div>
-                      <div className="text-xs text-zinc-500 mt-1">
-                        {s.hours.toFixed(1)} ч × {formatMoney(s.hourly_rate)} ₪/ч
+                      <div className="text-xs text-zinc-400 mt-1">
+                        {s.hours.toFixed(1)} ч × {formatMoney(s.hourly_rate)}/ч
                       </div>
                     </div>
                   ))}

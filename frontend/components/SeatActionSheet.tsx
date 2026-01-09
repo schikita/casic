@@ -55,7 +55,7 @@ export default function SeatActionSheet({
       >
         <div className="flex items-center justify-between mb-3">
           <div className="text-lg font-bold text-black">Место #{seatNo}</div>
-          <button className="text-zinc-600 px-3 py-2" onClick={onClose}>
+          <button className="text-zinc-600 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-zinc-400" onClick={onClose}>
             Закрыть
           </button>
         </div>
@@ -66,11 +66,11 @@ export default function SeatActionSheet({
             <input
               value={playerName}
               onChange={(e) => setPlayerName(e.target.value)}
-              className="flex-1 rounded-xl border px-3 py-3 text-base text-black placeholder-zinc-600"
+              className="flex-1 rounded-xl border border-zinc-300 bg-white text-black px-3 py-3 text-base focus:outline-none focus:ring-2 focus:ring-zinc-400 placeholder-zinc-600"
               placeholder="Имя игрока (или пусто)"
             />
             <button
-              className="rounded-xl bg-zinc-900 text-white px-4 py-3 font-semibold"
+              className="rounded-xl bg-zinc-900 text-white px-4 py-3 font-semibold focus:outline-none focus:ring-2 focus:ring-zinc-400"
               onClick={async () => {
                 const name = playerName.trim();
                 await onAssign(name ? name : null);
@@ -90,8 +90,8 @@ export default function SeatActionSheet({
                 className={[
                   "py-3 rounded-xl text-white text-base font-bold",
                   v < 0
-                    ? "bg-red-600 active:bg-red-700"
-                    : "bg-green-600 active:bg-green-700",
+                    ? "bg-red-600 active:bg-red-700 hover:bg-red-700/90"
+                    : "bg-green-600 active:bg-green-700 hover:bg-green-700/90",
                   !isMinusAmountValid(v) ? "opacity-50" : "",
                 ].join(" ")}
                 onClick={() => {
@@ -114,11 +114,11 @@ export default function SeatActionSheet({
               inputMode="numeric"
               value={customAmount}
               onChange={(e) => setCustomAmount(e.target.value)}
-              className="flex-1 rounded-xl border px-3 py-3 text-base text-black placeholder-zinc-600"
+              className="flex-1 rounded-xl border border-zinc-300 bg-white text-black px-3 py-3 text-base focus:outline-none focus:ring-2 focus:ring-zinc-400 placeholder-zinc-600"
               placeholder="например: 2500 или -2500"
             />
             <button
-              className="rounded-xl bg-blue-600 text-white px-4 py-3 font-semibold active:bg-blue-700 disabled:opacity-60"
+              className="rounded-xl bg-blue-600 text-white px-4 py-3 font-semibold active:bg-blue-700 disabled:opacity-60 focus:outline-none focus:ring-2 focus:ring-zinc-400"
               disabled={!parsedCustom || !isMinusAmountValid(parsedCustom)}
               onClick={() => {
                 if (!parsedCustom || !isMinusAmountValid(parsedCustom)) return;

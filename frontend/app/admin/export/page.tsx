@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import TopMenu from "@/components/TopMenu";
+import AdminNavigation from "@/components/AdminNavigation";
 import { RequireAuth } from "@/components/auth/RequireAuth";
 import { useAuth } from "@/components/auth/AuthContext";
 import { apiDownload, apiJson } from "@/lib/api";
@@ -138,17 +139,20 @@ export default function AdminExportPage() {
             </div>
           </div>
 
-          <button
-            className="rounded-xl bg-black text-white px-3 py-2 text-sm disabled:opacity-60"
-            onClick={() => loadTablesIfNeeded()}
-            disabled={busy}
-          >
-            Обновить
-          </button>
+          <div className="flex gap-2">
+            <button
+              className="rounded-xl bg-black text-white px-3 py-2 text-sm disabled:opacity-60 hover:bg-zinc-800/90"
+              onClick={() => loadTablesIfNeeded()}
+              disabled={busy}
+            >
+              Обновить
+            </button>
+            <AdminNavigation currentPath="/admin/export" />
+          </div>
         </div>
 
         {error && (
-          <div className="mb-3 rounded-xl bg-red-50 text-red-700 px-3 py-2 text-sm">
+          <div className="mb-3 rounded-xl bg-red-900/50 text-red-200 px-3 py-2 text-sm">
             {error}
           </div>
         )}
@@ -167,7 +171,7 @@ export default function AdminExportPage() {
                 type="date"
                 value={date}
                 onChange={(e) => setDate(e.target.value)}
-                className="w-full rounded-xl border px-3 py-3 text-base text-black"
+                className="w-full rounded-xl border border-zinc-700 bg-zinc-800 text-white px-3 py-3 text-base focus:outline-none focus:ring-2 focus:ring-white/15 placeholder-zinc-500"
                 disabled={busy}
               />
             </div>
@@ -177,7 +181,7 @@ export default function AdminExportPage() {
               <select
                 value={format}
                 onChange={(e) => setFormat(e.target.value as any)}
-                className="w-full rounded-xl border px-3 py-3 text-base text-black"
+                className="w-full rounded-xl border border-zinc-700 bg-zinc-800 text-white px-3 py-3 text-base focus:outline-none focus:ring-2 focus:ring-white/15 placeholder-zinc-500"
                 disabled={busy}
               >
                 <option value="csv">CSV</option>
@@ -191,7 +195,7 @@ export default function AdminExportPage() {
                 <select
                   value={tableId}
                   onChange={(e) => setTableId(e.target.value)}
-                  className="w-full rounded-xl border px-3 py-3 text-base text-black"
+                  className="w-full rounded-xl border border-zinc-700 bg-zinc-800 text-white px-3 py-3 text-base focus:outline-none focus:ring-2 focus:ring-white/15 placeholder-zinc-500"
                   disabled={busy}
                 >
                   {tables.length === 0 ? (
@@ -207,7 +211,7 @@ export default function AdminExportPage() {
               </div>
             ) : (
               <div className="rounded-xl bg-black text-white px-4 py-3">
-                <div className="text-xs text-white/60">Стол</div>
+                <div className="text-xs text-zinc-400">Стол</div>
                 <div className="font-semibold">
                   {user.table_id ? `ID ${user.table_id}` : "—"}
                 </div>
@@ -215,7 +219,7 @@ export default function AdminExportPage() {
             )}
 
             <button
-              className="rounded-xl bg-green-600 text-white px-4 py-3 font-semibold disabled:opacity-60"
+              className="rounded-xl bg-green-600 text-white px-4 py-3 font-semibold disabled:opacity-60 hover:bg-green-700/90"
               onClick={download}
               disabled={busy || !date || !effectiveTableId}
             >

@@ -99,7 +99,7 @@ export default function StartSessionModal({
         <div className="flex items-center justify-between mb-4">
           <div className="text-lg font-bold text-black">Открыть сессию</div>
           <button
-            className="text-zinc-600 px-3 py-2 disabled:opacity-50"
+            className="text-zinc-600 px-3 py-2 disabled:opacity-50 focus:outline-none focus:ring-2 focus:ring-zinc-400"
             onClick={onClose}
             disabled={submitting}
           >
@@ -118,11 +118,11 @@ export default function StartSessionModal({
         ) : (
           <>
             <div className="mb-4">
-              <label className="block text-sm font-medium text-zinc-700 mb-2">
+              <label className="block text-sm font-medium text-zinc-600 mb-2">
                 Дилер <span className="text-red-500">*</span>
               </label>
               <select
-                className="w-full rounded-xl border px-3 py-3 text-base text-black bg-white"
+                className="w-full rounded-xl border border-zinc-300 bg-white text-black px-3 py-3 text-base focus:outline-none focus:ring-2 focus:ring-zinc-400 placeholder-zinc-600"
                 value={selectedDealer ?? ""}
                 onChange={(e) =>
                   setSelectedDealer(e.target.value ? Number(e.target.value) : null)
@@ -145,11 +145,11 @@ export default function StartSessionModal({
             </div>
 
             <div className="mb-4">
-              <label className="block text-sm font-medium text-zinc-700 mb-2">
+              <label className="block text-sm font-medium text-zinc-600 mb-2">
                 Официант <span className="text-zinc-400">(опционально)</span>
               </label>
               <select
-                className="w-full rounded-xl border px-3 py-3 text-base text-black bg-white"
+                className="w-full rounded-xl border border-zinc-300 bg-white text-black px-3 py-3 text-base focus:outline-none focus:ring-2 focus:ring-zinc-400 placeholder-zinc-600"
                 value={selectedWaiter ?? ""}
                 onChange={(e) =>
                   setSelectedWaiter(e.target.value ? Number(e.target.value) : null)
@@ -167,7 +167,7 @@ export default function StartSessionModal({
             </div>
 
             <button
-              className="w-full rounded-xl bg-green-600 text-white py-4 font-bold text-lg active:bg-green-700 disabled:opacity-60"
+              className="w-full rounded-xl bg-green-600 text-white py-4 font-bold text-lg active:bg-green-700 disabled:opacity-60 focus:outline-none focus:ring-2 focus:ring-zinc-400"
               onClick={handleSubmit}
               disabled={!canSubmit}
             >

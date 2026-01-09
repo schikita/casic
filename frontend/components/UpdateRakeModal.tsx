@@ -64,7 +64,7 @@ export default function UpdateRakeModal({
         <div className="flex items-center justify-between mb-4">
           <div className="text-lg font-bold text-black">Обновить рейк при выходе</div>
           <button
-            className="text-zinc-600 px-3 py-2 disabled:opacity-50"
+            className="text-zinc-600 px-3 py-2 disabled:opacity-50 focus:outline-none focus:ring-2 focus:ring-zinc-400"
             onClick={onClose}
             disabled={submitting}
           >
@@ -79,12 +79,12 @@ export default function UpdateRakeModal({
         )}
 
         <div className="mb-6">
-          <label className="block text-sm font-medium text-zinc-700 mb-2">
+          <label className="block text-sm font-medium text-zinc-600 mb-2">
             Рейк при выходе
           </label>
           <input
             type="number"
-            className="w-full rounded-xl border px-3 py-3 text-base text-black bg-white"
+            className="w-full rounded-xl border border-zinc-300 bg-white text-black px-3 py-3 text-base focus:outline-none focus:ring-2 focus:ring-zinc-400 placeholder-zinc-600"
             placeholder="0"
             value={rakeOut}
             onChange={(e) => setRakeOut(e.target.value)}
@@ -99,7 +99,7 @@ export default function UpdateRakeModal({
         </div>
 
         <button
-          className="w-full rounded-xl bg-blue-600 text-white py-4 font-bold text-lg active:bg-blue-700 disabled:opacity-60"
+          className="w-full rounded-xl bg-blue-600 text-white py-4 font-bold text-lg active:bg-blue-700 disabled:opacity-60 focus:outline-none focus:ring-2 focus:ring-zinc-400"
           onClick={handleSubmit}
           disabled={submitting}
         >

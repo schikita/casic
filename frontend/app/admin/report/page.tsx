@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from "react";
 import TopMenu from "@/components/TopMenu";
+import AdminNavigation from "@/components/AdminNavigation";
 import { RequireAuth } from "@/components/auth/RequireAuth";
 import { useAuth } from "@/components/auth/AuthContext";
 import { apiDownload, apiFetch } from "@/lib/api";
@@ -108,10 +109,11 @@ export default function ReportPage() {
               Комплексный отчёт по всем столам
             </div>
           </div>
+          <AdminNavigation currentPath="/admin/report" />
         </div>
 
         {error && (
-          <div className="mb-3 rounded-xl bg-red-50 text-red-700 px-3 py-2 text-sm">
+          <div className="mb-3 rounded-xl bg-red-900/50 text-red-200 px-3 py-2 text-sm">
             {error}
           </div>
         )}
@@ -130,13 +132,13 @@ export default function ReportPage() {
                 type="date"
                 value={date}
                 onChange={(e) => setDate(e.target.value)}
-                className="w-full rounded-xl border px-3 py-3 text-base text-black"
+                className="w-full rounded-xl border border-zinc-700 bg-zinc-800 text-white px-3 py-3 text-base focus:outline-none focus:ring-2 focus:ring-white/15 placeholder-zinc-500"
                 disabled={busy}
               />
             </div>
 
             <button
-              className="rounded-xl bg-green-600 text-white px-4 py-3 font-semibold disabled:opacity-60"
+              className="rounded-xl bg-green-600 text-white px-4 py-3 font-semibold disabled:opacity-60 hover:bg-green-700/90"
               onClick={downloadReport}
               disabled={busy || !date}
             >

@@ -129,6 +129,12 @@ def get_day_summary(
 
     # Get working day boundaries (20:00 to 18:00 next day)
     start_time, end_time = _get_working_day_boundaries(d)
+    
+    # DIAGNOSTIC LOGGING
+    import logging
+    logger = logging.getLogger(__name__)
+    logger.info(f"=== DAY SUMMARY DIAGNOSTICS FOR {date} ===")
+    logger.info(f"Working day boundaries: {start_time.isoformat()} to {end_time.isoformat()}")
 
     # Fetch sessions for the working day
     sessions = (
@@ -237,6 +243,28 @@ def get_day_summary(
 
     # Casino result
     casino_result = total_chip_income_cash - total_player_balance - total_salary - total_chip_income_credit + total_balance_adjustments_profit - total_balance_adjustments_expense
+    
+    # DIAGNOSTIC LOGGING
+    logger.info(f"--- CALCULATION COMPONENTS ---")
+    logger.info(f"total_chip_income_cash (cash buyins): {total_chip_income_cash}")
+    logger.info(f"total_player_balance (chips players have): {total_player_balance}")
+    logger.info(f"total_salary: {total_salary}")
+    logger.info(f"total_chip_income_credit (credit buyins): {total_chip_income_credit}")
+    logger.info(f"total_balance_adjustments_profit: {total_balance_adjustments_profit}")
+    logger.info(f"total_balance_adjustments_expense: {total_balance_adjustments_expense}")
+    logger.info(f"--- FORMULA ---")
+    logger.info(f"casino_result = {total_chip_income_cash} - {total_player_balance} - {total_salary} - {total_chip_income_credit} + {total_balance_adjustments_profit} - {total_balance_adjustments_expense}")
+    logger.info(f"casino_result = {casino_result}")
+    logger.info(f"--- BALANCE ADJUSTMENTS DETAIL ---")
+    for adj in balance_adjustments_list:
+        logger.info(f"  ID {adj['id']}: {adj['comment']} = {adj['amount']} ₪ (by {adj['created_by_username']})")
+    logger.info(f"--- SESSIONS DETAIL ---")
+    for s in sessions:
+        sid = cast(str, s.id)
+        seats = seats_by_session.get(sid, [])
+        session_balance = sum(int(cast(int, seat.total)) for seat in seats)
+        logger.info(f"  Session {sid} (Table {s.table_id}, {s.status}): player_balance = {session_balance}")
+    logger.info(f"=== END DIAGNOSTICS ===")
 
     open_sessions = len([s for s in sessions if s.status == "open"])
 

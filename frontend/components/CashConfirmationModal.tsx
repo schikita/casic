@@ -54,21 +54,21 @@ export default function CashConfirmationModal({
 
         <div className="space-y-3">
           <button
-            className="w-full rounded-xl bg-green-600 text-white py-4 font-bold text-lg active:bg-green-700 disabled:opacity-60"
+            className="w-full rounded-xl bg-green-600 text-white py-4 font-bold text-lg active:bg-green-700 disabled:opacity-60 focus:outline-none focus:ring-2 focus:ring-zinc-400"
             onClick={onCash}
             disabled={loading}
           >
             💵 Наличные
           </button>
           <button
-            className="w-full rounded-xl bg-blue-600 text-white py-4 font-bold text-lg active:bg-blue-700 disabled:opacity-60"
+            className="w-full rounded-xl bg-blue-600 text-white py-4 font-bold text-lg active:bg-blue-700 disabled:opacity-60 focus:outline-none focus:ring-2 focus:ring-zinc-400"
             onClick={onCredit}
             disabled={loading}
           >
             📝 Кредит
           </button>
           <button
-            className="w-full rounded-xl bg-zinc-300 text-zinc-900 py-4 font-bold text-lg active:bg-zinc-400 disabled:opacity-60"
+            className="w-full rounded-xl bg-zinc-300 text-zinc-900 py-4 font-bold text-lg active:bg-zinc-400 disabled:opacity-60 focus:outline-none focus:ring-2 focus:ring-zinc-400"
             onClick={onCancel}
             disabled={loading}
           >

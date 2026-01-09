@@ -36,8 +36,17 @@ export default function SessionCloseConfirmationModal({
         className="bg-white w-full max-w-md rounded-2xl p-5 shadow-xl mx-4 max-h-[80vh] overflow-y-auto"
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="text-lg font-bold text-black mb-4">
-          Закрыть сессию
+        <div className="flex items-center justify-between mb-4">
+          <div className="text-lg font-bold text-black">
+            Закрыть сессию
+          </div>
+          <button
+            className="text-zinc-600 px-3 py-2 disabled:opacity-50 focus:outline-none focus:ring-2 focus:ring-zinc-400"
+            onClick={onCancel}
+            disabled={loading}
+          >
+            Закрыть
+          </button>
         </div>
 
         {hasCredit && (
@@ -56,7 +65,7 @@ export default function SessionCloseConfirmationModal({
                 {creditByPlayer.map((credit) => (
                   <div
                     key={credit.seat_no}
-                    className="flex justify-between text-xs text-red-600 bg-red-100 rounded px-2 py-1"
+                    className="flex justify-between text-xs text-red-600 bg-red-100 rounded-xl px-2 py-1"
                   >
                     <span>
                       {credit.player_name || `Место ${credit.seat_no}`}
@@ -82,14 +91,14 @@ export default function SessionCloseConfirmationModal({
 
         <div className="space-y-3">
           <button
-            className="w-full rounded-xl bg-red-600 text-white py-4 font-bold text-lg active:bg-red-700 disabled:opacity-60"
+            className="w-full rounded-xl bg-red-600 text-white py-4 font-bold text-lg active:bg-red-700 disabled:opacity-60 focus:outline-none focus:ring-2 focus:ring-zinc-400"
             onClick={onConfirm}
             disabled={loading}
           >
             Закрыть сессию
           </button>
           <button
-            className="w-full rounded-xl bg-zinc-300 text-zinc-900 py-4 font-bold text-lg active:bg-zinc-400 disabled:opacity-60"
+            className="w-full rounded-xl bg-zinc-300 text-zinc-900 py-4 font-bold text-lg active:bg-zinc-400 disabled:opacity-60 focus:outline-none focus:ring-2 focus:ring-zinc-400"
             onClick={onCancel}
             disabled={loading}
           >

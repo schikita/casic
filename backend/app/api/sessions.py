@@ -483,6 +483,89 @@ def close_session(
         raise HTTPException(status_code=404, detail="Session not found")
     _require_session_access(user, s)
 
+    # Get all seats for this session
+    seats = db.query(Seat).filter(Seat.session_id == session_id).all()
+    
+    # Cash out all player chips
+    for seat in seats:
+        seat_total = _as_int(seat.total)
+        if seat_total > 0:
+            # Get credit purchases for this seat
+            credit_purchases = (
+                db.query(ChipPurchase)
+                .filter(
+                    ChipPurchase.session_id == session_id,
+                    ChipPurchase.seat_no == seat.seat_no,
+                    ChipPurchase.payment_type == "credit",
+                    ChipPurchase.amount > 0,
+                )
+                .all()
+            )
+            
+            total_credit = sum(int(cast(int, cp.amount)) for cp in credit_purchases)
+            
+            # Get player name for comments
+            player_name = seat.player_name if seat.player_name else f"Seat {seat.seat_no}"
+            
+            # Get table name for comments
+            table = db.query(Table).filter(Table.id == s.table_id).first()
+            table_name = table.name if table else "Unknown"
+            session_date = s.date.strftime("%d.%m.%Y") if s.date else ""
+            
+            # If player has credited chips, decrease credit first
+            if total_credit > 0:
+                from ..models.db import CasinoBalanceAdjustment
+                credit_to_close = min(seat_total, total_credit)
+                
+                # Create balance adjustment (profit for casino) for credit portion
+                if credit_to_close > 0:
+                    adjustment = CasinoBalanceAdjustment(
+                        amount=credit_to_close,
+                        comment=f"Долг ({player_name}) - {table_name} - {session_date}",
+                        created_by_user_id=_as_int(user.id),
+                    )
+                    db.add(adjustment)
+                    db.flush()
+                    
+                    # Remove credit purchases by deleting them
+                    remaining_to_close = credit_to_close
+                    for cp in sorted(credit_purchases, key=lambda x: x.created_at):
+                        if remaining_to_close <= 0:
+                            break
+                        
+                        cp_amount = int(cast(int, cp.amount))
+                        if cp_amount <= remaining_to_close:
+                            # Delete the entire purchase
+                            db.delete(cp)
+                            remaining_to_close -= cp_amount
+                        else:
+                            # Partially close by reducing the amount
+                            cp.amount = cast(Any, cp_amount - remaining_to_close)
+                            remaining_to_close = 0
+                
+                # Calculate remaining chips after credit reduction
+                remaining_chips = seat_total - credit_to_close
+                
+                # If there are remaining chips, create a cashout
+                if remaining_chips > 0:
+                    op = ChipOp(
+                        session_id=cast(Any, session_id),
+                        seat_no=cast(Any, seat.seat_no),
+                        amount=cast(Any, -remaining_chips),  # Negative for cashout
+                    )
+                    db.add(op)
+            else:
+                # No credit, just cash out all chips
+                op = ChipOp(
+                    session_id=cast(Any, session_id),
+                    seat_no=cast(Any, seat.seat_no),
+                    amount=cast(Any, -seat_total),  # Negative for cashout
+                )
+                db.add(op)
+            
+            # Set seat total to 0 after cashing out
+            seat.total = cast(Any, 0)
+    
     s.status = cast(Any, "closed")
     s.closed_at = cast(Any, dt.datetime.utcnow())
     db.commit()

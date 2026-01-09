@@ -3,6 +3,26 @@
 @tailwind components;
 @tailwind utilities;
 
+/*
+ * UI DESIGN PATTERNS DOCUMENTATION
+ * =================================
+ *
+ * MOBILE-ONLY CONSTRAINT:
+ * - This application is designed for mobile devices only (phones in portrait orientation)
+ * - All pages use max-w-md to enforce mobile width consistently
+ * - No responsive breakpoints are needed as this is a mobile-only app
+ *
+ * THEME USAGE PATTERN:
+ * - Admin pages: Dark theme (zinc-900, zinc-800 backgrounds, white text)
+ * - User-facing pages: Light theme (white, zinc-100 backgrounds, black text)
+ * - Modals: Light theme (white background)
+ *
+ * EMOJI USAGE PATTERN:
+ * - Emojis are used consistently across the application for visual indicators
+ * - Current emojis in use: 💵 (cash), 📝 (credit), ✕ (close), ✓ (check), ⚠️ (warning)
+ * - Note: Do not replace emojis with icons - this is the established pattern
+ */
+
 :root {
   --background: #ffffff;
   --foreground: #171717;

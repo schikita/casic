@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from "react";
 import TopMenu from "@/components/TopMenu";
+import AdminNavigation from "@/components/AdminNavigation";
 import { RequireAuth } from "@/components/auth/RequireAuth";
 import { useAuth } from "@/components/auth/AuthContext";
 import { apiFetch } from "@/lib/api";
@@ -58,6 +59,14 @@ function formatDateTime(isoString: string) {
   return `${date} ${time}`;
 }
 
+function formatTime(isoString: string) {
+  const d = new Date(isoString);
+  return d.toLocaleTimeString("ru-RU", {
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
 function formatDate(isoString: string) {
   const d = new Date(isoString);
   return d.toLocaleDateString("ru-RU", {
@@ -67,16 +76,66 @@ function formatDate(isoString: string) {
   });
 }
 
-// Group sessions by working day (date)
+// Get working day boundaries for a given calendar date
+// Working day: 20:00 (8 PM) to 18:00 (6 PM) of next day
+function getWorkingDayBoundaries(date: Date): { start: Date; end: Date; label: string } {
+  const start = new Date(date);
+  start.setHours(20, 0, 0, 0);
+  
+  const end = new Date(date);
+  end.setDate(end.getDate() + 1);
+  end.setHours(18, 0, 0, 0);
+  
+  // Format the working day label (e.g., "09 января 20:00 - 10 января 18:00")
+  const startDateStr = start.toLocaleDateString("ru-RU", {
+    day: "2-digit",
+    month: "long",
+  });
+  const startTimeStr = start.toLocaleTimeString("ru-RU", {
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+  const endDateStr = end.toLocaleDateString("ru-RU", {
+    day: "2-digit",
+    month: "long",
+  });
+  const endTimeStr = end.toLocaleTimeString("ru-RU", {
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+  
+  const label = `${startDateStr} ${startTimeStr} - ${endDateStr} ${endTimeStr}`;
+  
+  return { start, end, label };
+}
+
+// Get the working day that a session belongs to based on its created_at time
+function getSessionWorkingDay(session: ClosedSession): { start: Date; end: Date; label: string } {
+  const createdAt = new Date(session.created_at);
+  const hour = createdAt.getHours();
+  
+  // If session started before 18:00, it belongs to the working day that started yesterday
+  // If session started at 18:00 or later, it belongs to the working day that started today
+  const workingDayStart = new Date(createdAt);
+  if (hour < 18) {
+    workingDayStart.setDate(workingDayStart.getDate() - 1);
+  }
+  
+  return getWorkingDayBoundaries(workingDayStart);
+}
+
+// Group sessions by working day (20:00 to 18:00 next day)
 function groupSessionsByDay(sessions: ClosedSession[]): Map<string, ClosedSession[]> {
   const groups = new Map<string, ClosedSession[]>();
   
   for (const session of sessions) {
-    const date = formatDate(session.created_at);
-    if (!groups.has(date)) {
-      groups.set(date, []);
+    const workingDay = getSessionWorkingDay(session);
+    const label = workingDay.label;
+    
+    if (!groups.has(label)) {
+      groups.set(label, []);
     }
-    groups.get(date)!.push(session);
+    groups.get(label)!.push(session);
   }
   
   return groups;
@@ -215,6 +274,7 @@ export default function SessionsPage() {
 
         <div className="flex items-center justify-between mb-3">
           <div className="text-xl font-bold text-white">История сессий</div>
+          <AdminNavigation currentPath="/admin/sessions" />
         </div>
 
         {error && (
@@ -228,7 +288,7 @@ export default function SessionsPage() {
           <div className="rounded-xl bg-zinc-900 p-4 mb-3">
             <div className="text-white font-semibold mb-2">Выберите стол</div>
             <select
-              className="w-full rounded-lg border border-zinc-700 bg-zinc-800 text-white px-3 py-2"
+              className="w-full rounded-xl border border-zinc-700 bg-zinc-800 text-white px-3 py-3 text-base focus:outline-none focus:ring-2 focus:ring-white/15 placeholder-zinc-500"
               value={selectedTableId ?? ""}
               onChange={(e) => setSelectedTableId(e.target.value ? Number(e.target.value) : null)}
             >
@@ -246,24 +306,28 @@ export default function SessionsPage() {
         {user.role === "table_admin" && tables.length > 0 && (
           <div className="rounded-xl bg-zinc-900 p-4 mb-3">
             <div className="text-white font-semibold mb-1">Стол</div>
-            <div className="text-white/80">{tables[0]?.name}</div>
+            <div className="text-zinc-300">{tables[0]?.name}</div>
           </div>
         )}
 
         {/* Sessions grouped by day */}
         <div className="space-y-4">
           {loading && (
-            <div className="text-center text-zinc-400 py-8">Загрузка...</div>
+            <div className="fixed bottom-4 left-0 right-0 flex justify-center pointer-events-none">
+              <div className="rounded-xl bg-black/80 text-white px-4 py-2 text-sm">
+                Загрузка…
+              </div>
+            </div>
           )}
 
           {!loading && !selectedTableId && (
-            <div className="text-center text-zinc-500 py-8">
+            <div className="rounded-xl bg-zinc-900 text-white/70 px-3 py-3 text-sm rounded-xl">
               Выберите стол для просмотра истории
             </div>
           )}
 
           {!loading && selectedTableId && sessions.length === 0 && (
-            <div className="text-center text-zinc-500 py-8">
+            <div className="rounded-xl bg-zinc-900 text-white/70 px-3 py-3 text-sm rounded-xl">
               Нет закрытых сессий
             </div>
           )}
@@ -298,48 +362,48 @@ export default function SessionsPage() {
                         <div className="text-white font-semibold">
                           Сессия #{session.id.slice(0, 8)}
                         </div>
-                        <div className="text-xs text-zinc-500">
-                          {formatDateTime(session.created_at)}
+                        <div className="text-xs text-zinc-400">
+                          {formatTime(session.created_at)} - {formatTime(session.closed_at)}
                         </div>
                       </div>
 
                       {/* Session details */}
                       <div className="space-y-2 text-sm">
-                        <div className="flex justify-between text-white/80">
+                        <div className="flex justify-between text-zinc-300">
                           <span>Стол:</span>
                           <span className="text-white">{session.table_name}</span>
                         </div>
 
                         {session.dealer_username && (
-                          <div className="flex justify-between text-white/80">
+                          <div className="flex justify-between text-zinc-300">
                             <span>Дилер:</span>
                             <span className="text-white">{session.dealer_username}</span>
                           </div>
                         )}
 
                         {session.waiter_username && (
-                          <div className="flex justify-between text-white/80">
+                          <div className="flex justify-between text-zinc-300">
                             <span>Официант:</span>
                             <span className="text-white">{session.waiter_username}</span>
                           </div>
                         )}
 
-                        <div className="flex justify-between text-white/80">
+                        <div className="flex justify-between text-zinc-300">
                           <span>Фишки в игре:</span>
                           <span className="text-white">{formatMoney(session.chips_in_play)}</span>
                         </div>
 
-                        <div className="flex justify-between text-white/80">
+                        <div className="flex justify-between text-zinc-300">
                           <span>Всего покупок:</span>
                           <span className="text-white">{formatMoney(session.total_buyins)}</span>
                         </div>
 
-                        <div className="flex justify-between text-white/80">
+                        <div className="flex justify-between text-zinc-300">
                           <span>Всего выплат:</span>
                           <span className="text-white">{formatMoney(Math.abs(session.total_cashouts))}</span>
                         </div>
 
-                        <div className="flex justify-between text-white/80">
+                        <div className="flex justify-between text-zinc-300">
                           <span>Рейк:</span>
                           <span className="text-white font-semibold">{formatMoney(session.total_rake)}</span>
                         </div>
@@ -355,13 +419,13 @@ export default function SessionsPage() {
                             {session.credits.map((credit) => (
                               <div
                                 key={`${session.id}-${credit.seat_no}`}
-                                className="flex items-center justify-between bg-zinc-800 rounded-lg px-3 py-2"
+                                className="flex items-center justify-between bg-zinc-800 rounded-xl px-3 py-2"
                               >
                                 <div className="flex-1">
                                   <div className="text-white text-sm">
                                     {credit.player_name || `Место ${credit.seat_no}`}
                                   </div>
-                                  <div className="text-xs text-zinc-500">
+                                  <div className="text-xs text-zinc-400">
                                     Место {credit.seat_no}
                                   </div>
                                 </div>
@@ -374,7 +438,7 @@ export default function SessionsPage() {
                                       amount: credit.amount,
                                     })
                                   }
-                                  className="rounded-lg bg-green-600 text-white px-3 py-2 text-sm font-semibold active:bg-green-700"
+                                  className="rounded-xl bg-green-600 text-white px-3 py-2 text-sm font-semibold active:bg-green-700 disabled:opacity-60 focus:outline-none focus:ring-2 focus:ring-white/15"
                                 >
                                   {formatMoney(credit.amount)} ₪
                                 </button>
@@ -405,8 +469,8 @@ export default function SessionsPage() {
                 </span>{" "}
                 принёс наличные для закрытия кредита?
               </div>
-              <div className="rounded-lg bg-zinc-800 p-3 mb-4">
-                <div className="flex justify-between text-white/80 text-sm">
+              <div className="rounded-xl bg-zinc-800 p-3 mb-4">
+                <div className="flex justify-between text-zinc-300 text-sm">
                   <span>Сумма кредита:</span>
                   <span className="text-white font-semibold">
                     {formatMoney(confirmCloseCredit.amount)} ₪
@@ -415,14 +479,14 @@ export default function SessionsPage() {
               </div>
               <div className="flex gap-2">
                 <button
-                  className="flex-1 rounded-xl bg-zinc-800 text-white px-4 py-3 font-semibold disabled:opacity-50"
+                  className="flex-1 rounded-xl bg-zinc-800 text-white px-4 py-3 font-semibold disabled:opacity-50 focus:outline-none focus:ring-2 focus:ring-white/15"
                   onClick={() => setConfirmCloseCredit(null)}
                   disabled={closingCredit}
                 >
                   Отмена
                 </button>
                 <button
-                  className="flex-1 rounded-xl bg-green-600 text-white px-4 py-3 font-semibold disabled:opacity-50 active:bg-green-700"
+                  className="flex-1 rounded-xl bg-green-600 text-white px-4 py-3 font-semibold disabled:opacity-50 active:bg-green-700 focus:outline-none focus:ring-2 focus:ring-white/15"
                   onClick={() =>
                     closeCredit(
                       confirmCloseCredit.sessionId,
