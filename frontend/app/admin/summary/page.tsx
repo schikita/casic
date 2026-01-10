@@ -218,7 +218,7 @@ export default function SummaryPage() {
                 </span>
               </div>
               <div className="flex justify-between items-center">
-                <span className="text-zinc-300">Выдача фишек (кэшаут)</span>
+                <span className="text-zinc-300">Кэшаут фишек игроками</span>
                 <span className="text-red-400 font-semibold">
                   -{formatMoney(data.expenses.cashout)}
                 </span>

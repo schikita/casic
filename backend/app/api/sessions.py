@@ -473,19 +473,19 @@ def undo_last(
 def _validate_and_get_session(db: DBSession, session_id: str, user: User) -> Session:
     """
     Validate session exists and user has access to it.
-    
+
     Args:
         db: Database session
         session_id: Session ID to validate
         user: Current user
-        
+
     Returns:
         Session object
-        
+
     Raises:
         HTTPException: If session not found or user doesn't have access
     """
-    s = db.query(Session).filter(Session.id == session_id).first()
+    s = db.query(Session).options(joinedload(Session.dealer), joinedload(Session.waiter)).filter(Session.id == session_id).first()
     if not s:
         raise HTTPException(status_code=404, detail="Session not found")
     _require_session_access(user, s)
