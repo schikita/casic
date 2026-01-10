@@ -125,9 +125,11 @@ def create_app() -> FastAPI:
         with engine.connect() as conn:
             try:
                 conn.execute(text("SELECT chips_in_play FROM sessions LIMIT 1"))
-            except Exception:
+            except Exception as e:
+                logger.info(f"Adding chips_in_play column to sessions: {e}")
                 conn.execute(text("ALTER TABLE sessions ADD COLUMN chips_in_play INTEGER NOT NULL DEFAULT 0"))
                 conn.commit()
+                logger.info("Successfully added chips_in_play column to sessions")
 
         # Migrate: create casino_balance_adjustments table if missing
         with engine.connect() as conn:
