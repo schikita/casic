@@ -43,6 +43,7 @@ export default function HomePage() {
   const [creditByPlayer, setCreditByPlayer] = useState<Array<{ seat_no: number; player_name: string | null; amount: number }>>([]);
   const [showReplaceDealerModal, setShowReplaceDealerModal] = useState<boolean>(false);
   const [showDealerHistory, setShowDealerHistory] = useState<boolean>(false);
+  const [rake, setRake] = useState<{ total_rake: number; total_buyins: number; total_cashouts: number; total_credit: number } | null>(null);
 
   // Roles allowed to start sessions
   const canStartSession =
@@ -114,10 +115,15 @@ export default function HomePage() {
       setSession(s);
 
       if (s) {
-        const list = await apiJson<Seat[]>("/api/sessions/" + s.id + "/seats");
+        const [list, rakeData] = await Promise.all([
+          apiJson<Seat[]>("/api/sessions/" + s.id + "/seats"),
+          apiJson<{ total_rake: number; total_buyins: number; total_cashouts: number; total_credit: number }>("/api/sessions/" + s.id + "/rake"),
+        ]);
         setSeats(list);
+        setRake(rakeData);
       } else {
         setSeats([]);
+        setRake(null);
       }
     } catch (e) {
       setError(getErrorMessage(e) || "Ошибка");
@@ -187,12 +193,16 @@ export default function HomePage() {
       );
       updateSeatInState(updated);
 
-      // Refresh session to get updated chips_in_play
+      // Refresh session and rake to get updated data
       const url = buildOpenSessionUrl(user?.role, session.table_id);
-      const updatedSession = await apiJson<Session>(url);
+      const [updatedSession, rakeData] = await Promise.all([
+        apiJson<Session>(url),
+        apiJson<{ total_rake: number; total_buyins: number; total_cashouts: number; total_credit: number }>("/api/sessions/" + session.id + "/rake"),
+      ]);
       if (updatedSession) {
         setSession(updatedSession);
       }
+      setRake(rakeData);
 
       setShowCashModal(false);
       setPendingChipAmount(null);
@@ -361,12 +371,30 @@ export default function HomePage() {
 
         {!loading && session && (
           <>
-            <div className="mb-3 rounded-xl bg-zinc-900 text-white px-4 py-3">
-              <div className="text-xs text-zinc-300">
-                Итог фишек (сумма по местам)
+            <div className="mb-3 grid grid-cols-3 gap-2">
+              <div className="rounded-xl bg-zinc-900 text-white px-3 py-3">
+                <div className="text-xs text-zinc-300">
+                  Фишек на столе
+                </div>
+                <div className="text-xl font-bold tabular-nums">
+                  {totals.chips}
+                </div>
               </div>
-              <div className="text-2xl font-bold tabular-nums">
-                {totals.chips}
+              <div className="rounded-xl bg-zinc-900 text-white px-3 py-3">
+                <div className="text-xs text-zinc-300">
+                  Рейк (грязный)
+                </div>
+                <div className="text-xl font-bold tabular-nums">
+                  {rake?.total_rake ?? 0}
+                </div>
+              </div>
+              <div className="rounded-xl bg-red-900 text-white px-3 py-3">
+                <div className="text-xs text-red-200">
+                  Кредит
+                </div>
+                <div className="text-xl font-bold tabular-nums">
+                  -{rake?.total_credit ?? 0}
+                </div>
               </div>
             </div>
 

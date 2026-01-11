@@ -369,7 +369,7 @@ def list_chip_purchases(
 @router.post(
     "/balance-adjustments",
     response_model=CasinoBalanceAdjustmentOut,
-    dependencies=[Depends(require_roles("superadmin"))],
+    dependencies=[Depends(require_roles("superadmin", "table_admin"))],
 )
 def create_balance_adjustment(
     payload: CasinoBalanceAdjustmentIn,
@@ -379,7 +379,7 @@ def create_balance_adjustment(
     """Create a new casino balance adjustment (profit or expense)."""
     if payload.amount == 0:
         raise HTTPException(status_code=400, detail="Amount cannot be zero")
-    
+
     adjustment = CasinoBalanceAdjustment(
         amount=payload.amount,
         comment=payload.comment.strip(),
@@ -388,7 +388,7 @@ def create_balance_adjustment(
     db.add(adjustment)
     db.commit()
     db.refresh(adjustment)
-    
+
     return CasinoBalanceAdjustmentOut(
         id=int(cast(int, adjustment.id)),
         created_at=cast(dt.datetime, adjustment.created_at),
@@ -402,7 +402,7 @@ def create_balance_adjustment(
 @router.get(
     "/balance-adjustments",
     response_model=list[CasinoBalanceAdjustmentOut],
-    dependencies=[Depends(require_roles("superadmin"))],
+    dependencies=[Depends(require_roles("superadmin", "table_admin"))],
 )
 def list_balance_adjustments(
     limit: int = Query(default=50, ge=1, le=200),

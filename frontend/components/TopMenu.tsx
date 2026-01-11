@@ -111,14 +111,12 @@ export default function TopMenu() {
                   >
                     Админ: Итоги дня
                   </button>
-                  {isSuperadmin && (
-                    <button
-                      className="rounded-xl bg-zinc-100 px-4 py-3 text-left text-zinc-700 focus:outline-none focus:ring-2 focus:ring-zinc-400"
-                      onClick={() => go("/admin/balance-adjustments")}
-                    >
-                      Админ: Баланс
-                    </button>
-                  )}
+                  <button
+                    className="rounded-xl bg-zinc-100 px-4 py-3 text-left text-zinc-700 focus:outline-none focus:ring-2 focus:ring-zinc-400"
+                    onClick={() => go("/admin/balance-adjustments")}
+                  >
+                    Админ: Баланс
+                  </button>
                   <button
                     className="rounded-xl bg-zinc-100 px-4 py-3 text-left text-zinc-700 focus:outline-none focus:ring-2 focus:ring-zinc-400"
                     onClick={() => go("/admin/report")}

@@ -14,6 +14,15 @@ function todayLocalISO() {
   return `${yyyy}-${mm}-${dd}`;
 }
 
+function formatWorkingDayTime(isoString: string): string {
+  const date = new Date(isoString);
+  const hours = String(date.getHours()).padStart(2, "0");
+  const minutes = String(date.getMinutes()).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  return `${day}.${month} ${hours}:${minutes}`;
+}
+
 async function fetchPreselectedDate(): Promise<string> {
   const res = await apiFetch("/api/admin/day-summary/preselected-date");
   if (!res.ok) {
@@ -41,6 +50,8 @@ interface BalanceAdjustment {
 
 interface SummaryData {
   date: string;
+  working_day_start: string;
+  working_day_end: string;
   income: { buyin_cash: number; balance_adjustments: number };
   expenses: { salaries: number; buyin_credit: number; cashout: number; balance_adjustments: number };
   result: number;
@@ -177,13 +188,13 @@ export default function SummaryPage() {
           <div className="space-y-3">
             {/* Result Card */}
             <div className="rounded-xl bg-zinc-900 p-4">
-              <div className="text-xs text-zinc-500 mb-1">РЕЗУЛЬТАТ</div>
+              <div className="text-xs text-zinc-500 mb-1">РЕЙК (ЧИСТЫЙ)</div>
               <div className={`text-3xl font-bold ${resultColor}`}>
                 {data.result >= 0 ? "+" : ""}
                 {formatMoney(data.result)} ₪
               </div>
-              <div className="text-xs text-zinc-500 mt-1">
-                {data.result >= 0 ? "Прибыль" : "Убыток"} за {data.date}
+              <div className="text-xs text-zinc-400 mt-2">
+                Рабочий день: {formatWorkingDayTime(data.working_day_start)} — {formatWorkingDayTime(data.working_day_end)}
               </div>
             </div>
 

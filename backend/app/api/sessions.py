@@ -423,6 +423,53 @@ def get_non_cash_purchases(
     }
 
 
+@router.get(
+    "/{session_id}/rake",
+    dependencies=[Depends(require_roles("superadmin", "dealer", "table_admin"))],
+)
+def get_session_rake(
+    session_id: str,
+    db: DBSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Get current rake (casino profit) for a session."""
+    s = db.query(Session).filter(Session.id == session_id).first()
+    if not s:
+        raise HTTPException(status_code=404, detail="Session not found")
+    _require_session_access(user, s)
+
+    # Get all chip operations for this session (only positive = buyins)
+    chip_ops = db.query(ChipOp).filter(ChipOp.session_id == session_id).all()
+    total_buyins = sum(int(cast(int, op.amount)) for op in chip_ops if op.amount > 0)
+
+    # Get total chips currently on table (sum of all seat totals)
+    seats = db.query(Seat).filter(Seat.session_id == session_id).all()
+    chips_on_table = sum(int(cast(int, seat.total)) for seat in seats)
+
+    # Get total credit (chips bought on credit)
+    credit_purchases = (
+        db.query(ChipPurchase)
+        .filter(
+            ChipPurchase.session_id == session_id,
+            ChipPurchase.payment_type == "credit",
+            ChipPurchase.amount > 0,
+        )
+        .all()
+    )
+    total_credit = sum(int(cast(int, p.amount)) for p in credit_purchases)
+
+    # Rake = casino profit = chips sold to players - chips still on table
+    # This represents what players have lost
+    total_rake = total_buyins - chips_on_table
+
+    return {
+        "total_rake": total_rake,
+        "total_buyins": total_buyins,
+        "chips_on_table": chips_on_table,
+        "total_credit": total_credit,
+    }
+
+
 @router.post(
     "/{session_id}/chips",
     response_model=SeatOut,
@@ -572,35 +619,6 @@ def _get_session_seats(db: DBSession, session_id: str) -> list[Seat]:
     return db.query(Seat).filter(Seat.session_id == session_id).all()
 
 
-def _close_seat_credit(
-    db: DBSession,
-    session: Session,
-    seat: Seat,
-    seat_total: int,
-    user: User,
-) -> int:
-    """
-    Close credit for a seat and return the amount closed.
-    
-    Args:
-        db: Database session
-        session: Session object
-        seat: Seat object
-        seat_total: Total chips in seat
-        user: Current user
-        
-    Returns:
-        Amount of credit that was closed
-    """
-    if seat_total <= 0:
-        return 0
-    
-    # Close credit using the service
-    credit_closed = CreditService.close_credit_for_session(db, session, seat, user)
-    
-    return credit_closed
-
-
 def _cashout_seat_chips(
     db: DBSession,
     session: Session,
@@ -693,22 +711,16 @@ def close_session(
         logger.info(f"Found {len(seats)} seats")
         
         # Cash out all player chips
+        # NOTE: We do NOT auto-close credit when closing a session.
+        # Credit must be manually closed via the /api/admin/close-credit endpoint.
+        # This ensures credit repayment is tracked on the day it actually happens.
         for seat in seats:
             seat_total = _as_int(seat.total)
             logger.info(f"Processing seat {seat.seat_no}: total={seat_total}")
             if seat_total > 0:
-                # Close credit first (if any)
-                logger.info(f"Closing credit for seat {seat.seat_no}")
-                credit_closed = _close_seat_credit(db, s, seat, seat_total, user)
-                logger.info(f"Credit closed for seat {seat.seat_no}: {credit_closed}")
-                
-                # Calculate remaining chips after credit reduction
-                remaining_chips = seat_total - credit_closed
-                
-                # Cash out remaining chips (if any)
-                if remaining_chips > 0:
-                    _cashout_seat_chips(db, s, seat, remaining_chips, user)
-                
+                # Cash out all chips (including those bought on credit)
+                _cashout_seat_chips(db, s, seat, seat_total, user)
+
                 # Set seat total to 0 after cashing out
                 seat.total = cast(Any, 0)
         

@@ -110,7 +110,7 @@ export default function BalanceAdjustmentsPage() {
 
   // Load adjustments on mount
   useEffect(() => {
-    if (user?.role === "superadmin") {
+    if (user?.role === "superadmin" || user?.role === "table_admin") {
       loadAdjustments();
     }
   }, [user]);
@@ -123,13 +123,13 @@ export default function BalanceAdjustmentsPage() {
     );
   }
 
-  if (user.role !== "superadmin") {
+  if (user.role !== "superadmin" && user.role !== "table_admin") {
     return (
       <RequireAuth>
         <main className="p-4 max-w-md mx-auto">
           <TopMenu />
           <div className="mt-4 rounded-xl bg-zinc-900 text-white px-4 py-3">
-            Доступ запрещён. Только для суперадмина.
+            Доступ запрещён. Только для администраторов.
           </div>
         </main>
       </RequireAuth>

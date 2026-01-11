@@ -198,24 +198,41 @@ def get_day_summary(
     ) if session_ids else []
 
     # Fetch balance adjustments for the working day
-    # Note: Balance adjustments are global (not associated with any table/session),
-    # so they are shown to all users regardless of table filtering
-    # However, table_admins should not see balance adjustments
+    # Balance adjustments are now shown to both superadmin and table_admin
     balance_adjustments = (
         db.query(CasinoBalanceAdjustment)
         .options(joinedload(CasinoBalanceAdjustment.created_by))
         .filter(CasinoBalanceAdjustment.created_at >= start_time, CasinoBalanceAdjustment.created_at < end_time)
         .order_by(CasinoBalanceAdjustment.created_at.asc())
         .all()
-    ) if not is_table_admin else []
+    )
 
     # DIAGNOSTIC LOGGING: Balance adjustments
     logger.info(f"--- BALANCE ADJUSTMENTS DIAGNOSTICS ---")
     logger.info(f"balance_adjustments length: {len(balance_adjustments)}")
     logger.info(f"is_table_admin: {is_table_admin}")
 
-    # Fetch all staff (only for superadmin)
-    staff = db.query(User).filter(User.role.in_(["dealer", "waiter"])).all() if not is_table_admin else []
+    # Fetch staff who worked on sessions in this working day
+    # For table_admin: only staff who worked on their table's sessions
+    # For superadmin: all staff (or filtered by table_id if provided)
+    if is_table_admin:
+        # Get unique dealer and waiter IDs from the sessions
+        dealer_ids = set()
+        waiter_ids = set()
+        for s in sessions:
+            # Get all dealers from dealer_assignments
+            for assignment in s.dealer_assignments:
+                if assignment.dealer_id:
+                    dealer_ids.add(int(cast(int, assignment.dealer_id)))
+            # Get waiter from session
+            if s.waiter_id:
+                waiter_ids.add(int(cast(int, s.waiter_id)))
+
+        staff_ids = dealer_ids | waiter_ids
+        staff = db.query(User).filter(User.id.in_(staff_ids)).all() if staff_ids else []
+    else:
+        # Superadmin: get all staff
+        staff = db.query(User).filter(User.role.in_(["dealer", "waiter"])).all()
 
     # DIAGNOSTIC LOGGING: Staff
     logger.info(f"--- STAFF DIAGNOSTICS ---")
@@ -260,29 +277,30 @@ def get_day_summary(
         else:
             total_balance_adjustments_expense += abs(amount)
 
-    # Calculate staff salary (only for superadmin)
+    # Calculate staff salary for both superadmin and table_admin
+    # For table_admin: only staff who worked on their table
+    # For superadmin: all staff (or filtered by table_id if provided)
     total_salary = 0
     staff_details = []
-    if not is_table_admin:
-        for person in staff:
-            role = cast(str, person.role)
-            hourly_rate = int(cast(int, person.hourly_rate)) if person.hourly_rate else 0
+    for person in staff:
+        role = cast(str, person.role)
+        hourly_rate = int(cast(int, person.hourly_rate)) if person.hourly_rate else 0
 
-            if role == "dealer":
-                hours = _calculate_dealer_hours(sessions, int(cast(int, person.id)))
-            else:
-                hours = _calculate_waiter_hours(sessions, int(cast(int, person.id)))
+        if role == "dealer":
+            hours = _calculate_dealer_hours(sessions, int(cast(int, person.id)))
+        else:
+            hours = _calculate_waiter_hours(sessions, int(cast(int, person.id)))
 
-            salary = round(hours * hourly_rate)
-            if hours > 0:
-                staff_details.append({
-                    "name": person.username,
-                    "role": role,
-                    "hours": round(hours, 2),
-                    "hourly_rate": hourly_rate,
-                    "salary": salary,
-                })
-            total_salary += salary
+        salary = round(hours * hourly_rate)
+        if hours > 0:
+            staff_details.append({
+                "name": person.username,
+                "role": role,
+                "hours": round(hours, 2),
+                "hourly_rate": hourly_rate,
+                "salary": salary,
+            })
+        total_salary += salary
 
     # DIAGNOSTIC LOGGING: Total salary
     logger.info(f"--- SALARY DIAGNOSTICS ---")
@@ -325,48 +343,32 @@ def get_day_summary(
     open_sessions = len([s for s in sessions if s.status == "open"])
 
     # DIAGNOSTIC LOGGING: Complete response structure
-    # Build response based on user role
-    if is_table_admin:
-        # For table_admin: exclude salaries and balance adjustments completely
-        response_data = {
-            "date": date,
-            "income": {
-                "buyin_cash": total_chip_income_cash,
-            },
-            "expenses": {
-                "buyin_credit": total_chip_income_credit,
-                "cashout": total_chip_cashout,
-            },
-            "result": casino_result,
-            "info": {
-                "player_balance": total_player_balance,
-                "total_sessions": len(sessions),
-                "open_sessions": open_sessions,
-            },
-        }
-    else:
-        # For superadmin: include all fields
-        response_data = {
-            "date": date,
-            "income": {
-                "buyin_cash": total_chip_income_cash,
-                "balance_adjustments": total_balance_adjustments_profit,
-            },
-            "expenses": {
-                "salaries": total_salary,
-                "buyin_credit": total_chip_income_credit,
-                "cashout": total_chip_cashout,
-                "balance_adjustments": total_balance_adjustments_expense,
-            },
-            "result": casino_result,
-            "info": {
-                "player_balance": total_player_balance,
-                "total_sessions": len(sessions),
-                "open_sessions": open_sessions,
-            },
-            "staff": staff_details,
-            "balance_adjustments": balance_adjustments_list,
-        }
+    # Build response - both superadmin and table_admin now see all fields
+    # For table_admin: data is filtered to their table only
+    # For superadmin: data is casino-wide or filtered by table_id if provided
+    response_data = {
+        "date": date,
+        "working_day_start": start_time.isoformat(),
+        "working_day_end": end_time.isoformat(),
+        "income": {
+            "buyin_cash": total_chip_income_cash,
+            "balance_adjustments": total_balance_adjustments_profit,
+        },
+        "expenses": {
+            "salaries": total_salary,
+            "buyin_credit": total_chip_income_credit,
+            "cashout": total_chip_cashout,
+            "balance_adjustments": total_balance_adjustments_expense,
+        },
+        "result": casino_result,
+        "info": {
+            "player_balance": total_player_balance,
+            "total_sessions": len(sessions),
+            "open_sessions": open_sessions,
+        },
+        "staff": staff_details,
+        "balance_adjustments": balance_adjustments_list,
+    }
     logger.info(f"=== COMPLETE RESPONSE STRUCTURE ===")
     logger.info(f"Response: {response_data}")
     logger.info(f"=== END RESPONSE DIAGNOSTICS ===")
