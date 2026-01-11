@@ -6,11 +6,12 @@ import SeatActionSheet from "@/components/SeatActionSheet";
 import StartSessionModal from "@/components/StartSessionModal";
 import CashConfirmationModal from "@/components/CashConfirmationModal";
 import SessionCloseConfirmationModal from "@/components/SessionCloseConfirmationModal";
+import ReplaceDealerModal from "@/components/ReplaceDealerModal";
 import TopMenu from "@/components/TopMenu";
 import { RequireAuth } from "@/components/auth/RequireAuth";
 import { useAuth } from "@/components/auth/AuthContext";
 import { apiJson, getSelectedTableId, setSelectedTableId } from "@/lib/api";
-import { normalizeTableId, getErrorMessage } from "@/lib/utils";
+import { normalizeTableId, getErrorMessage, formatTime } from "@/lib/utils";
 import type { Seat, Session, Table } from "@/lib/types";
 
 function buildOpenSessionUrl(userRole: string | undefined, tableId?: number): string {
@@ -40,6 +41,8 @@ export default function HomePage() {
   const [showCloseModal, setShowCloseModal] = useState<boolean>(false);
   const [creditAmount, setCreditAmount] = useState<number>(0);
   const [creditByPlayer, setCreditByPlayer] = useState<Array<{ seat_no: number; player_name: string | null; amount: number }>>([]);
+  const [showReplaceDealerModal, setShowReplaceDealerModal] = useState<boolean>(false);
+  const [showDealerHistory, setShowDealerHistory] = useState<boolean>(false);
 
   // Roles allowed to start sessions
   const canStartSession =
@@ -389,7 +392,44 @@ export default function HomePage() {
                 )}
               </div>
 
+              {/* Dealer history toggle */}
+              {session.dealer_assignments && session.dealer_assignments.length > 1 && (
+                <button
+                  className="text-xs text-blue-600 underline mb-2"
+                  onClick={() => setShowDealerHistory(!showDealerHistory)}
+                >
+                  {showDealerHistory ? "Скрыть историю дилеров" : `История дилеров (${session.dealer_assignments.length})`}
+                </button>
+              )}
 
+              {/* Dealer history list */}
+              {showDealerHistory && session.dealer_assignments && session.dealer_assignments.length > 0 && (
+                <div className="mb-3 border-t border-zinc-200 pt-2">
+                  <div className="text-xs text-zinc-500 mb-1">История дилеров:</div>
+                  <div className="space-y-1">
+                    {session.dealer_assignments.map((assignment) => (
+                      <div key={assignment.id} className="text-xs text-zinc-700 flex justify-between">
+                        <span>{assignment.dealer_username}</span>
+                        <span className="text-zinc-400">
+                          {formatTime(assignment.started_at)}
+                          {assignment.ended_at ? ` - ${formatTime(assignment.ended_at)}` : " (текущий)"}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Replace dealer button for table_admin and superadmin */}
+              {(user?.role === "superadmin" || user?.role === "table_admin") && (
+                <button
+                  className="w-full rounded-xl bg-blue-600 text-white py-2 text-sm active:bg-blue-700 disabled:opacity-50"
+                  onClick={() => setShowReplaceDealerModal(true)}
+                  disabled={busy}
+                >
+                  Заменить дилера
+                </button>
+              )}
             </div>
 
             <div className="flex gap-2 mb-3">
@@ -444,6 +484,14 @@ export default function HomePage() {
               onConfirm={confirmCloseSession}
               onCancel={() => setShowCloseModal(false)}
               loading={busy}
+            />
+
+            <ReplaceDealerModal
+              open={showReplaceDealerModal}
+              sessionId={session.id}
+              currentDealerId={session.dealer_id}
+              onClose={() => setShowReplaceDealerModal(false)}
+              onDealerReplaced={() => tableId && loadOpenSession(tableId)}
             />
 
             {busy && (

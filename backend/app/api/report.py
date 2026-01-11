@@ -22,7 +22,7 @@ from sqlalchemy.orm import Session as DBSession, joinedload
 from sqlalchemy import func
 
 from ..core.deps import get_current_user, get_db, require_roles
-from ..models.db import CasinoBalanceAdjustment, ChipPurchase, Seat, Session, Table, User, ChipOp
+from ..models.db import CasinoBalanceAdjustment, ChipPurchase, Seat, Session, SessionDealerAssignment, Table, User, ChipOp
 from .admin import _resolve_table_id_for_user
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
@@ -162,7 +162,11 @@ def get_day_summary(
     # Fetch sessions for the working day
     sessions_query = (
         db.query(Session)
-        .options(joinedload(Session.dealer), joinedload(Session.waiter))
+        .options(
+            joinedload(Session.dealer),
+            joinedload(Session.waiter),
+            joinedload(Session.dealer_assignments).joinedload(SessionDealerAssignment.dealer),
+        )
         .filter(Session.created_at >= start_time, Session.created_at < end_time)
     )
     
@@ -459,16 +463,32 @@ def _calculate_dealer_hours(
     dealer_id: int,
 ) -> float:
     """
-    Calculate dealer working hours. Dealers can only work one session at a time,
-    so we just sum up the session durations.
+    Calculate dealer working hours using SessionDealerAssignment records.
+    This accounts for dealer changes within a session.
+
+    If a session has dealer_assignments, use those for accurate time tracking.
+    Otherwise, fall back to the legacy dealer_id field for backward compatibility.
     """
     total_seconds = 0.0
+    now = dt.datetime.utcnow()
+
     for s in sessions:
-        if s.dealer_id != dealer_id:
-            continue
-        start = cast(dt.datetime, s.created_at)
-        end = cast(dt.datetime, s.closed_at) if s.closed_at else dt.datetime.utcnow()
-        total_seconds += (end - start).total_seconds()
+        # Check if session has dealer assignments (new method)
+        if s.dealer_assignments:
+            for assignment in s.dealer_assignments:
+                if int(cast(int, assignment.dealer_id)) != dealer_id:
+                    continue
+                start = cast(dt.datetime, assignment.started_at)
+                end = cast(dt.datetime, assignment.ended_at) if assignment.ended_at else now
+                total_seconds += (end - start).total_seconds()
+        else:
+            # Fallback to legacy method for sessions without dealer_assignments
+            if s.dealer_id != dealer_id:
+                continue
+            start = cast(dt.datetime, s.created_at)
+            end = cast(dt.datetime, s.closed_at) if s.closed_at else now
+            total_seconds += (end - start).total_seconds()
+
     return total_seconds / 3600.0
 
 
@@ -507,7 +527,11 @@ def export_report(
     tables = db.query(Table).order_by(Table.id.asc()).all()
     sessions_query = (
         db.query(Session)
-        .options(joinedload(Session.dealer), joinedload(Session.waiter))
+        .options(
+            joinedload(Session.dealer),
+            joinedload(Session.waiter),
+            joinedload(Session.dealer_assignments).joinedload(SessionDealerAssignment.dealer),
+        )
         .filter(Session.created_at >= start_time, Session.created_at < end_time)
     )
     

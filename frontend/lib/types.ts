@@ -21,6 +21,15 @@ export type Staff = {
   role: UserRole;
 };
 
+export type SessionDealerAssignment = {
+  id: number;
+  dealer_id: number;
+  dealer_username: string;
+  started_at: string;
+  ended_at: string | null;
+  rake: number | null;
+};
+
 export type Session = {
   id: string;
   table_id: number;
@@ -33,6 +42,7 @@ export type Session = {
   dealer: Staff | null;
   waiter: Staff | null;
   chips_in_play: number | null;
+  dealer_assignments: SessionDealerAssignment[];
 };
 
 export type Seat = {

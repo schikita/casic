@@ -79,6 +79,7 @@ class Session(Base):
     ops = relationship("ChipOp", back_populates="session", cascade="all, delete-orphan")
     dealer = relationship("User", foreign_keys=[dealer_id])
     waiter = relationship("User", foreign_keys=[waiter_id])
+    dealer_assignments = relationship("SessionDealerAssignment", back_populates="session", cascade="all, delete-orphan", order_by="SessionDealerAssignment.started_at")
 
     # Note: We don't use a unique constraint on (table_id, date, status) because
     # it would prevent multiple closed sessions for the same table/date.
@@ -147,21 +148,44 @@ class ChipPurchase(Base):
     )
 
 
+class SessionDealerAssignment(Base):
+    """
+    Tracks dealer assignments within a session.
+    A session can have multiple dealers over time, each with their own start/end time.
+    This enables accurate salary calculation for each dealer based on their actual working time.
+    """
+    __tablename__ = "session_dealer_assignments"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    session_id = Column(String(36), ForeignKey("sessions.id"), nullable=False, index=True)
+    dealer_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    started_at = Column(DateTime, nullable=False, default=utc_now)
+    ended_at = Column(DateTime, nullable=True)  # NULL means currently active
+
+    session = relationship("Session", back_populates="dealer_assignments")
+    dealer = relationship("User")
+
+    __table_args__ = (
+        Index("ix_session_dealer_assignment_session", "session_id"),
+        Index("ix_session_dealer_assignment_dealer", "dealer_id"),
+    )
+
+
 class CasinoBalanceAdjustment(Base):
     __tablename__ = "casino_balance_adjustments"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    
+
     # Timestamp of when the adjustment was made
     created_at = Column(DateTime, nullable=False, default=utc_now, index=True)
-    
+
     # Amount (positive for profit, negative for expense)
     amount = Column(Integer, nullable=False)
-    
+
     # Text comment explaining the adjustment
     comment = Column(Text, nullable=False)
-    
+
     # User who made the adjustment
     created_by_user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
-    
+
     created_by = relationship("User")

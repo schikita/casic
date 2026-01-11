@@ -14,7 +14,7 @@ from typing import Any, cast
 from ..core.deps import get_current_user, get_db, require_roles
 from ..core.exceptions import ErrorMessages
 from ..core.security import get_password_hash
-from ..models.db import CasinoBalanceAdjustment, ChipOp, ChipPurchase, Seat, Session, Table, User
+from ..models.db import CasinoBalanceAdjustment, ChipOp, ChipPurchase, Seat, Session, SessionDealerAssignment, Table, User
 from ..models.schemas import (
     CasinoBalanceAdjustmentIn,
     CasinoBalanceAdjustmentOut,
@@ -22,6 +22,7 @@ from ..models.schemas import (
     CloseCreditIn,
     CloseCreditOut,
     ClosedSessionOut,
+    SessionDealerAssignmentOut,
     TableCreateIn,
     TableOut,
     UserCreateIn,
@@ -571,7 +572,11 @@ def list_closed_sessions(
     # Get closed sessions, sorted by created_at descending
     sessions = (
         db.query(Session)
-        .options(joinedload(Session.dealer), joinedload(Session.waiter))
+        .options(
+            joinedload(Session.dealer),
+            joinedload(Session.waiter),
+            joinedload(Session.dealer_assignments).joinedload(SessionDealerAssignment.dealer),
+        )
         .filter(Session.table_id == tid, Session.status == "closed")
         .order_by(Session.created_at.desc())
         .all()
@@ -596,25 +601,32 @@ def list_closed_sessions(
             seats_by_session[sid] = {}
         seats_by_session[sid][int(cast(int, seat.seat_no))] = seat
     
-    # Load all credit purchases for all sessions at once
-    all_credit_purchases = (
+    # Load all chip purchases for all sessions at once
+    all_chip_purchases = (
         db.query(ChipPurchase)
-        .filter(
-            ChipPurchase.session_id.in_(session_ids),
-            ChipPurchase.payment_type == "credit",
-            ChipPurchase.amount > 0,
-        )
+        .filter(ChipPurchase.session_id.in_(session_ids))
         .all()
     )
+
+    # Group by session for credit display and cashout calculations
     credit_by_session: dict[str, dict[int, int]] = {}
-    for cp in all_credit_purchases:
+    purchases_by_session: dict[str, list[ChipPurchase]] = {}
+    for cp in all_chip_purchases:
         sid = cast(str, cp.session_id)
-        seat_no = int(cast(int, cp.seat_no))
-        amount = int(cast(int, cp.amount))
-        if sid not in credit_by_session:
-            credit_by_session[sid] = {}
-        credit_by_session[sid][seat_no] = credit_by_session[sid].get(seat_no, 0) + amount
-    
+
+        # Track all purchases by session for cashout calculation
+        if sid not in purchases_by_session:
+            purchases_by_session[sid] = []
+        purchases_by_session[sid].append(cp)
+
+        # Track credit purchases for credit display
+        if cp.payment_type == "credit" and cp.amount > 0:
+            seat_no = int(cast(int, cp.seat_no))
+            amount = int(cast(int, cp.amount))
+            if sid not in credit_by_session:
+                credit_by_session[sid] = {}
+            credit_by_session[sid][seat_no] = credit_by_session[sid].get(seat_no, 0) + amount
+
     # Load all chip ops for all sessions at once
     all_chip_ops = (
         db.query(ChipOp)
@@ -627,6 +639,12 @@ def list_closed_sessions(
         if sid not in chip_ops_by_session:
             chip_ops_by_session[sid] = []
         chip_ops_by_session[sid].append(op)
+
+    # Build set of ChipOp IDs that have corresponding ChipPurchases
+    # These are actual money transactions (buyins/cashouts), not player losses
+    chip_op_ids_with_purchases: set[int] = set()
+    for cp in all_chip_purchases:
+        chip_op_ids_with_purchases.add(int(cast(int, cp.chip_op_id)))
     
     # Build response
     out: list[ClosedSessionOut] = []
@@ -656,11 +674,59 @@ def list_closed_sessions(
             })
         
         # Calculate totals
+        # Buyins: positive ChipOps (player bought chips)
         chip_ops = chip_ops_by_session.get(cast(str, s.id), [])
         total_buyins = sum(int(cast(int, op.amount)) for op in chip_ops if op.amount > 0)
-        total_cashouts = sum(int(cast(int, op.amount)) for op in chip_ops if op.amount < 0)
-        total_rake = total_buyins + total_cashouts  # cashouts are negative, so this gives the rake
+
+        # Cashouts: negative ChipPurchases (cash returned to player, e.g., forced cashout at session close)
+        session_purchases = purchases_by_session.get(cast(str, s.id), [])
+        total_cashouts = sum(int(cast(int, cp.amount)) for cp in session_purchases if cp.amount < 0)
+
+        # Rake = buyins + cashouts (cashouts are negative, so this gives profit)
+        total_rake = total_buyins + total_cashouts
         
+        # Build dealer assignments list with rake per dealer
+        dealer_assignments_out = []
+        if s.dealer_assignments:
+            # Calculate rake per dealer by counting player losses during each shift
+            # Rake = chips lost by players (negative ChipOps WITHOUT corresponding ChipPurchase)
+            # ChipOps WITH ChipPurchase are actual cashouts (money returned to player), not rake
+            for assignment in s.dealer_assignments:
+                assignment_start = cast(dt.datetime, assignment.started_at)
+                was_replaced = assignment.ended_at is not None
+                assignment_end = cast(dt.datetime, assignment.ended_at) if assignment.ended_at else cast(dt.datetime, s.closed_at) if s.closed_at else dt.datetime.utcnow()
+
+                # Rake = sum of player losses (negative ChipOps without ChipPurchase)
+                dealer_rake = 0
+                for op in chip_ops:
+                    op_id = int(cast(int, op.id))
+                    # Skip if this ChipOp has a ChipPurchase (it's a real money transaction, not a loss)
+                    if op_id in chip_op_ids_with_purchases:
+                        continue
+
+                    op_time = cast(dt.datetime, op.created_at)
+                    amount = int(cast(int, op.amount))
+                    if amount < 0:  # Player loss = casino gain
+                        # Use exclusive end (<) for replaced dealers to avoid double-counting
+                        # Use inclusive end (<=) for last dealer (session close)
+                        if was_replaced:
+                            if assignment_start <= op_time < assignment_end:
+                                dealer_rake += abs(amount)
+                        else:
+                            if assignment_start <= op_time <= assignment_end:
+                                dealer_rake += abs(amount)
+
+                dealer_assignments_out.append(
+                    SessionDealerAssignmentOut(
+                        id=int(cast(int, assignment.id)),
+                        dealer_id=int(cast(int, assignment.dealer_id)),
+                        dealer_username=cast(str, assignment.dealer.username) if assignment.dealer else "Unknown",
+                        started_at=cast(dt.datetime, assignment.started_at),
+                        ended_at=cast(dt.datetime, assignment.ended_at) if assignment.ended_at else None,
+                        rake=dealer_rake,
+                    )
+                )
+
         out.append(
             ClosedSessionOut(
                 id=str(cast(str, s.id)),
@@ -678,6 +744,7 @@ def list_closed_sessions(
                 total_buyins=total_buyins,
                 total_cashouts=total_cashouts,
                 credits=credits,
+                dealer_assignments=dealer_assignments_out,
             )
         )
     

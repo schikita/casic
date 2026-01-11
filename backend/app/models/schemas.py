@@ -81,6 +81,24 @@ class StaffOut(BaseModel):
         from_attributes = True
 
 
+class SessionDealerAssignmentOut(BaseModel):
+    """Output schema for dealer assignment within a session."""
+    id: int
+    dealer_id: int
+    dealer_username: str
+    started_at: dt.datetime
+    ended_at: dt.datetime | None = None
+    rake: int | None = None  # Rake attributed to this dealer during their shift
+
+    class Config:
+        from_attributes = True
+
+
+class ReplaceDealerIn(BaseModel):
+    """Input schema for replacing a dealer in a session."""
+    new_dealer_id: int = Field(..., description="ID of the new dealer to assign")
+
+
 class SessionOut(BaseModel):
     id: str
     table_id: int
@@ -93,6 +111,8 @@ class SessionOut(BaseModel):
     dealer: StaffOut | None = None
     waiter: StaffOut | None = None
     chips_in_play: int | None = None
+    # List of all dealer assignments for this session (for salary tracking)
+    dealer_assignments: list[SessionDealerAssignmentOut] = []
 
     class Config:
         from_attributes = True
@@ -168,6 +188,8 @@ class ClosedSessionOut(BaseModel):
     total_cashouts: int = 0
     # Credit information per player
     credits: list[dict] = []  # Each dict has: seat_no, player_name, amount
+    # Dealer assignments with hours worked
+    dealer_assignments: list[SessionDealerAssignmentOut] = []
 
     class Config:
         from_attributes = True

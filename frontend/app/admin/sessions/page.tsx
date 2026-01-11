@@ -14,6 +14,15 @@ type SessionCredit = {
   amount: number;
 };
 
+type SessionDealerAssignment = {
+  id: number;
+  dealer_id: number;
+  dealer_username: string;
+  started_at: string;
+  ended_at: string | null;
+  rake: number | null;
+};
+
 type ClosedSession = {
   id: string;
   table_id: number;
@@ -30,6 +39,7 @@ type ClosedSession = {
   total_buyins: number;
   total_cashouts: number;
   credits: SessionCredit[];
+  dealer_assignments: SessionDealerAssignment[];
 };
 
 // Get working day boundaries for a given calendar date
@@ -340,7 +350,28 @@ export default function SessionsPage() {
                           <span className="text-white">{session.table_name}</span>
                         </div>
 
-                        {session.dealer_username && (
+                        {/* Show dealer assignments with rake */}
+                        {session.dealer_assignments && session.dealer_assignments.length > 0 ? (
+                          <div className="text-zinc-300">
+                            <span>{session.dealer_assignments.length > 1 ? "Дилеры:" : "Дилер:"}</span>
+                            <div className="mt-2 space-y-2">
+                              {session.dealer_assignments.map((assignment) => (
+                                <div key={assignment.id} className="bg-zinc-800/50 rounded-lg px-3 py-2">
+                                  <div className="flex justify-between items-center">
+                                    <span className="text-white font-medium">{assignment.dealer_username}</span>
+                                    <span className={`font-semibold ${(assignment.rake ?? 0) >= 0 ? "text-green-400" : "text-red-400"}`}>
+                                      {formatMoney(assignment.rake ?? 0)}
+                                    </span>
+                                  </div>
+                                  <div className="text-xs text-zinc-500 mt-1">
+                                    {formatTime(assignment.started_at)}
+                                    {assignment.ended_at ? ` — ${formatTime(assignment.ended_at)}` : " — ..."}
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        ) : session.dealer_username && (
                           <div className="flex justify-between text-zinc-300">
                             <span>Дилер:</span>
                             <span className="text-white">{session.dealer_username}</span>

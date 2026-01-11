@@ -148,6 +148,60 @@ def create_app() -> FastAPI:
                 """))
                 conn.commit()
 
+        # Migrate: create session_dealer_assignments table if missing
+        with engine.connect() as conn:
+            try:
+                conn.execute(text("SELECT id FROM session_dealer_assignments LIMIT 1"))
+            except Exception:
+                logger.info("Creating session_dealer_assignments table")
+                conn.execute(text("""
+                    CREATE TABLE session_dealer_assignments (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        session_id VARCHAR(36) NOT NULL,
+                        dealer_id INTEGER NOT NULL,
+                        started_at DATETIME NOT NULL,
+                        ended_at DATETIME,
+                        FOREIGN KEY (session_id) REFERENCES sessions(id),
+                        FOREIGN KEY (dealer_id) REFERENCES users(id)
+                    )
+                """))
+                conn.execute(text("CREATE INDEX ix_session_dealer_assignment_session ON session_dealer_assignments(session_id)"))
+                conn.execute(text("CREATE INDEX ix_session_dealer_assignment_dealer ON session_dealer_assignments(dealer_id)"))
+                conn.commit()
+                logger.info("Successfully created session_dealer_assignments table")
+
+        # Migrate: populate session_dealer_assignments from existing sessions with dealers
+        db = SessionLocal()
+        try:
+            from .models.db import Session as SessionModel, SessionDealerAssignment
+            # Check if there are sessions with dealers that don't have assignments yet
+            sessions_with_dealers = db.query(SessionModel).filter(
+                SessionModel.dealer_id.isnot(None)
+            ).all()
+
+            for session in sessions_with_dealers:
+                # Check if this session already has dealer assignments
+                existing = db.query(SessionDealerAssignment).filter(
+                    SessionDealerAssignment.session_id == session.id
+                ).first()
+                if not existing:
+                    # Create initial assignment from session's dealer_id
+                    ended_at = session.closed_at if session.status == "closed" else None
+                    assignment = SessionDealerAssignment(
+                        session_id=session.id,
+                        dealer_id=session.dealer_id,
+                        started_at=session.created_at,
+                        ended_at=ended_at,
+                    )
+                    db.add(assignment)
+                    logger.info(f"Migrated dealer assignment for session {session.id}")
+            db.commit()
+        except Exception as e:
+            logger.warning(f"Error migrating dealer assignments: {e}")
+            db.rollback()
+        finally:
+            db.close()
+
         db = SessionLocal()
         try:
           exists = db.query(User).filter(User.role == "superadmin").first()
