@@ -2,7 +2,6 @@
 
 import { useState, useEffect } from "react";
 import TopMenu from "@/components/TopMenu";
-import AdminNavigation from "@/components/AdminNavigation";
 import { RequireAuth } from "@/components/auth/RequireAuth";
 import { useAuth } from "@/components/auth/AuthContext";
 import { apiFetch } from "@/lib/api";
@@ -85,7 +84,7 @@ export default function SummaryPage() {
   }
 
   useEffect(() => {
-    if (user?.role === "superadmin" && !initialDateLoaded) {
+    if ((user?.role === "superadmin" || user?.role === "table_admin") && !initialDateLoaded) {
       fetchPreselectedDate()
         .then((preselectedDate) => {
           setDate(preselectedDate);
@@ -99,7 +98,7 @@ export default function SummaryPage() {
   }, [user, initialDateLoaded]);
 
   useEffect(() => {
-    if (user?.role === "superadmin" && date && initialDateLoaded) {
+    if ((user?.role === "superadmin" || user?.role === "table_admin") && date && initialDateLoaded) {
       loadSummary(date);
     }
   }, [user, date, initialDateLoaded]);
@@ -112,13 +111,13 @@ export default function SummaryPage() {
     );
   }
 
-  if (user.role !== "superadmin") {
+  if (user.role !== "superadmin" && user.role !== "table_admin") {
     return (
       <RequireAuth>
         <main className="p-4 max-w-md mx-auto">
           <TopMenu />
           <div className="mt-4 rounded-xl bg-zinc-900 text-white px-4 py-3">
-            Доступ запрещён. Только для суперадмина.
+            Доступ запрещён. Только для суперадмина или администратора стола.
           </div>
         </main>
       </RequireAuth>
@@ -137,8 +136,8 @@ export default function SummaryPage() {
         <TopMenu />
 
         <div className="flex items-center justify-between mb-3">
-          <div className="text-xl font-bold text-white">Итоги дня</div>
-          <div className="flex gap-2">
+          <div>
+            <div className="text-xl font-bold text-white mb-2">Итоги дня</div>
             <input
               type="date"
               value={date}
@@ -146,8 +145,18 @@ export default function SummaryPage() {
               className="rounded-xl border border-zinc-700 bg-zinc-800 text-white px-3 py-3 text-base focus:outline-none focus:ring-2 focus:ring-white/15 placeholder-zinc-500"
               disabled={loading}
             />
-            <AdminNavigation />
           </div>
+          <button
+            className="rounded-xl bg-black text-white px-3 py-2 text-sm disabled:opacity-60 hover:bg-zinc-800/90"
+            onClick={() => {
+              if (date) {
+                loadSummary(date);
+              }
+            }}
+            disabled={loading || !date}
+          >
+            Обновить
+          </button>
         </div>
 
         {error && (

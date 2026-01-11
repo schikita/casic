@@ -5,7 +5,6 @@ import { useSearchParams } from "next/navigation";
 import { RequireAuth } from "@/components/auth/RequireAuth";
 import { useAuth } from "@/components/auth/AuthContext";
 import TopMenu from "@/components/TopMenu";
-import AdminNavigation from "@/components/AdminNavigation";
 import { apiJson } from "@/lib/api";
 import { isNonEmpty, toInt, formatDateTime as fmtDateTime } from "@/lib/utils";
 import { DEFAULT_SEATS_COUNT, DEFAULT_PURCHASE_LIMIT, MIN_PURCHASE_LIMIT, MAX_PURCHASE_LIMIT, MIN_SEATS_COUNT, MAX_SEATS_COUNT, MIN_PASSWORD_LENGTH, SUCCESS_MESSAGE_DURATION } from "@/lib/constants";
@@ -414,16 +413,13 @@ function AdminPageContent() {
             </div>
           </div>
 
-          <div className="flex gap-2">
-            <button
-              className="rounded-xl bg-black text-white px-3 py-2 text-sm disabled:opacity-60 hover:bg-zinc-800/90"
-              onClick={() => refreshCurrentTab().catch(() => {})}
-              disabled={busy}
-            >
-              Обновить
-            </button>
-            <AdminNavigation activeTab={tab} />
-          </div>
+          <button
+            className="rounded-xl bg-black text-white px-3 py-2 text-sm disabled:opacity-60 hover:bg-zinc-800/90"
+            onClick={() => refreshCurrentTab().catch(() => {})}
+            disabled={busy}
+          >
+            Обновить
+          </button>
         </div>
 
         {error && (

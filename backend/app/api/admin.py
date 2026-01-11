@@ -57,7 +57,7 @@ def _ascii_filename_component(name: str) -> str:
     return "".join(out)
 
 
-def _resolve_table_id_for_user(user: User, table_id: int | None = None) -> int:
+def _resolve_table_id_for_user(user: User, table_id: int | None = None) -> int | None:
     """
     Resolve the table_id to use based on user role and permissions.
     
@@ -66,7 +66,7 @@ def _resolve_table_id_for_user(user: User, table_id: int | None = None) -> int:
         table_id: Optional table_id from request
         
     Returns:
-        Resolved table_id
+        Resolved table_id, or None for superadmin viewing all tables
         
     Raises:
         HTTPException: If table_id cannot be resolved or access is forbidden
@@ -74,9 +74,8 @@ def _resolve_table_id_for_user(user: User, table_id: int | None = None) -> int:
     role = cast(str, user.role)
     
     if role == "superadmin":
-        if table_id is None:
-            raise HTTPException(status_code=400, detail=ErrorMessages.TABLE_ID_REQUIRED)
-        return int(table_id)
+        # Superadmin can view all tables if no table_id is provided
+        return int(table_id) if table_id is not None else None
     
     if role not in ("table_admin", "waiter"):
         raise HTTPException(status_code=403, detail="Forbidden")

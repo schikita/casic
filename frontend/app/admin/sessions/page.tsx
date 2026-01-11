@@ -2,7 +2,6 @@
 
 import { useState, useEffect, useMemo, useCallback } from "react";
 import TopMenu from "@/components/TopMenu";
-import AdminNavigation from "@/components/AdminNavigation";
 import { RequireAuth } from "@/components/auth/RequireAuth";
 import { useAuth } from "@/components/auth/AuthContext";
 import { apiFetch } from "@/lib/api";
@@ -231,7 +230,17 @@ export default function SessionsPage() {
 
         <div className="flex items-center justify-between mb-3">
           <div className="text-xl font-bold text-white">История сессий</div>
-          <AdminNavigation />
+          <button
+            className="rounded-xl bg-black text-white px-3 py-2 text-sm disabled:opacity-60 hover:bg-zinc-800/90"
+            onClick={() => {
+              if (selectedTableId) {
+                loadSessions();
+              }
+            }}
+            disabled={loading || !selectedTableId}
+          >
+            Обновить
+          </button>
         </div>
 
         {error && (

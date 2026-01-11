@@ -2,7 +2,6 @@
 
 import { useEffect, useMemo, useState, useCallback } from "react";
 import TopMenu from "@/components/TopMenu";
-import AdminNavigation from "@/components/AdminNavigation";
 import { RequireAuth } from "@/components/auth/RequireAuth";
 import { useAuth } from "@/components/auth/AuthContext";
 import { apiDownload, apiJson } from "@/lib/api";
@@ -137,17 +136,13 @@ export default function AdminExportPage() {
               Выгрузка отчёта по столу за выбранную дату
             </div>
           </div>
-
-          <div className="flex gap-2">
-            <button
-              className="rounded-xl bg-black text-white px-3 py-2 text-sm disabled:opacity-60 hover:bg-zinc-800/90"
-              onClick={() => loadTablesIfNeeded()}
-              disabled={busy}
-            >
-              Обновить
-            </button>
-            <AdminNavigation />
-          </div>
+          <button
+            className="rounded-xl bg-black text-white px-3 py-2 text-sm disabled:opacity-60 hover:bg-zinc-800/90"
+            onClick={() => loadTablesIfNeeded()}
+            disabled={busy}
+          >
+            Обновить
+          </button>
         </div>
 
         {error && (

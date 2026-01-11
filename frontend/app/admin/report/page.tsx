@@ -2,7 +2,6 @@
 
 import { useState, useEffect } from "react";
 import TopMenu from "@/components/TopMenu";
-import AdminNavigation from "@/components/AdminNavigation";
 import { RequireAuth } from "@/components/auth/RequireAuth";
 import { useAuth } from "@/components/auth/AuthContext";
 import { apiDownload, apiFetch } from "@/lib/api";
@@ -35,7 +34,7 @@ export default function ReportPage() {
 
   // Load preselected date on mount (same logic as summary page)
   useEffect(() => {
-    if (user?.role === "superadmin" && !initialDateLoaded) {
+    if ((user?.role === "superadmin" || user?.role === "table_admin") && !initialDateLoaded) {
       fetchPreselectedDate()
         .then((preselectedDate) => {
           setDate(preselectedDate);
@@ -84,13 +83,13 @@ export default function ReportPage() {
     );
   }
 
-  if (user.role !== "superadmin") {
+  if (user.role !== "superadmin" && user.role !== "table_admin") {
     return (
       <RequireAuth>
         <main className="p-4 max-w-md mx-auto">
           <TopMenu />
           <div className="mt-4 rounded-xl bg-zinc-900 text-white px-4 py-3">
-            Доступ запрещён. Только для суперадмина.
+            Доступ запрещён. Только для суперадмина или администратора стола.
           </div>
         </main>
       </RequireAuth>
@@ -109,7 +108,16 @@ export default function ReportPage() {
               Комплексный отчёт по всем столам
             </div>
           </div>
-          <AdminNavigation />
+          <button
+            className="rounded-xl bg-black text-white px-3 py-2 text-sm disabled:opacity-60 hover:bg-zinc-800/90"
+            onClick={() => {
+              setError(null);
+              setOk(null);
+            }}
+            disabled={busy}
+          >
+            Обновить
+          </button>
         </div>
 
         {error && (

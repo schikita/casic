@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { useRouter, usePathname } from "next/navigation";
+import { useAuth } from "./auth/AuthContext";
 
 interface AdminNavigationProps {
   activeTab?: "tables" | "users" | "purchases";
@@ -10,7 +11,11 @@ interface AdminNavigationProps {
 export default function AdminNavigation({ activeTab }: AdminNavigationProps) {
   const router = useRouter();
   const pathname = usePathname();
+  const { user } = useAuth();
   const [showMenu, setShowMenu] = useState(false);
+  
+  // Determine if current user is table_admin
+  const isTableAdmin = user?.role === "table_admin";
 
   return (
     <>
@@ -41,20 +46,23 @@ export default function AdminNavigation({ activeTab }: AdminNavigationProps) {
             <div id="admin-nav-title" className="text-lg font-bold text-white mb-3">Админка</div>
             <div className="text-xs text-zinc-400 mb-3 font-medium">Разделы</div>
             <div className="grid grid-cols-2 gap-2">
-              <button
-                className={`rounded-xl px-3 py-2 text-left text-sm transition-colors ${
-                  pathname === "/admin" && activeTab === "tables"
-                    ? "bg-zinc-700 text-white"
-                    : "bg-black text-zinc-300 hover:bg-zinc-800 hover:text-white"
-                }`}
-                onClick={() => {
-                  router.push("/admin?tab=tables");
-                  setShowMenu(false);
-                }}
-                aria-current={pathname === "/admin" && activeTab === "tables" ? "page" : undefined}
-              >
-                Столы
-              </button>
+              {/* Tables tab - only for superadmin */}
+              {!isTableAdmin && (
+                <button
+                  className={`rounded-xl px-3 py-2 text-left text-sm transition-colors ${
+                    pathname === "/admin" && activeTab === "tables"
+                      ? "bg-zinc-700 text-white"
+                      : "bg-black text-zinc-300 hover:bg-zinc-800 hover:text-white"
+                  }`}
+                  onClick={() => {
+                    router.push("/admin?tab=tables");
+                    setShowMenu(false);
+                  }}
+                  aria-current={pathname === "/admin" && activeTab === "tables" ? "page" : undefined}
+                >
+                  Столы
+                </button>
+              )}
 
               <button
                 className={`rounded-xl px-3 py-2 text-left text-sm transition-colors ${
@@ -70,19 +78,22 @@ export default function AdminNavigation({ activeTab }: AdminNavigationProps) {
                 Пользователи
               </button>
 
-              <button
-                className={`rounded-xl px-3 py-2 text-left text-sm transition-colors ${
-                  pathname === "/admin" && activeTab === "purchases"
-                    ? "bg-zinc-700 text-white"
-                    : "bg-black text-zinc-300 hover:bg-zinc-800 hover:text-white"
-                }`}
-                onClick={() => {
-                  router.push("/admin?tab=purchases");
-                  setShowMenu(false);
-                }}
-              >
-                Покупки
-              </button>
+              {/* Purchases tab - only for superadmin */}
+              {!isTableAdmin && (
+                <button
+                  className={`rounded-xl px-3 py-2 text-left text-sm transition-colors ${
+                    pathname === "/admin" && activeTab === "purchases"
+                      ? "bg-zinc-700 text-white"
+                      : "bg-black text-zinc-300 hover:bg-zinc-800 hover:text-white"
+                  }`}
+                  onClick={() => {
+                    router.push("/admin?tab=purchases");
+                    setShowMenu(false);
+                  }}
+                >
+                  Покупки
+                </button>
+              )}
 
               <button
                 className={`rounded-xl px-3 py-2 text-left text-sm transition-colors ${
@@ -126,19 +137,22 @@ export default function AdminNavigation({ activeTab }: AdminNavigationProps) {
                 Итоги дня
               </button>
 
-              <button
-                className={`rounded-xl px-3 py-2 text-left text-sm transition-colors ${
-                  pathname === "/admin/balance-adjustments"
-                    ? "bg-zinc-700 text-white"
-                    : "bg-black text-zinc-300 hover:bg-zinc-800 hover:text-white"
-                }`}
-                onClick={() => {
-                  router.push("/admin/balance-adjustments");
-                  setShowMenu(false);
-                }}
-              >
-                Баланс
-              </button>
+              {/* Balance adjustments tab - only for superadmin */}
+              {!isTableAdmin && (
+                <button
+                  className={`rounded-xl px-3 py-2 text-left text-sm transition-colors ${
+                    pathname === "/admin/balance-adjustments"
+                      ? "bg-zinc-700 text-white"
+                      : "bg-black text-zinc-300 hover:bg-zinc-800 hover:text-white"
+                  }`}
+                  onClick={() => {
+                    router.push("/admin/balance-adjustments");
+                    setShowMenu(false);
+                  }}
+                >
+                  Баланс
+                </button>
+              )}
 
               <button
                 className={`rounded-xl px-3 py-2 text-left text-sm transition-colors ${

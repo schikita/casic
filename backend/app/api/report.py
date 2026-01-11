@@ -23,6 +23,7 @@ from sqlalchemy import func
 
 from ..core.deps import get_current_user, get_db, require_roles
 from ..models.db import CasinoBalanceAdjustment, ChipPurchase, Seat, Session, Table, User, ChipOp
+from .admin import _resolve_table_id_for_user
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
 
@@ -46,7 +47,7 @@ def _get_working_day_boundaries(date: dt.date) -> tuple[dt.datetime, dt.datetime
 @router.get("/day-summary/preselected-date")
 def get_preselected_date(
     db: DBSession = Depends(get_db),
-    current_user: Any = Depends(require_roles("superadmin")),
+    current_user: User = Depends(require_roles("superadmin", "table_admin")),
 ):
     """
     Get the preselected date for the daily summary page.
@@ -56,7 +57,13 @@ def get_preselected_date(
     2. Most recent working day if current one is finished but next hasn't started
     
     Working day: 20:00 (8 PM) to 18:00 (6 PM) of next day.
+    
+    For table_admin: only considers sessions for their assigned table.
+    For superadmin: considers all sessions.
     """
+    # Resolve table_id for the user
+    table_id = _resolve_table_id_for_user(current_user)
+    
     now = dt.datetime.utcnow()
     
     # Determine current working day
@@ -74,23 +81,19 @@ def get_preselected_date(
     start_time, end_time = _get_working_day_boundaries(working_day_start)
     
     # Check for open sessions in current working day
-    open_sessions = (
+    query = (
         db.query(Session)
         .filter(Session.created_at >= start_time, Session.created_at < end_time)
-        .filter(Session.status == "open")
-        .first()
+        .filter(Session.table_id == table_id)
     )
+    open_sessions = query.filter(Session.status == "open").first()
     
     if open_sessions:
         # Current working day is not finished
         return {"date": working_day_start.isoformat()}
     
     # Check if current working day has any sessions at all
-    any_sessions = (
-        db.query(Session)
-        .filter(Session.created_at >= start_time, Session.created_at < end_time)
-        .first()
-    )
+    any_sessions = query.first()
     
     if any_sessions:
         # Current working day is finished (all sessions closed)
@@ -105,6 +108,7 @@ def get_preselected_date(
         prev_sessions = (
             db.query(Session)
             .filter(Session.created_at >= prev_start, Session.created_at < prev_end)
+            .filter(Session.table_id == table_id)
             .first()
         )
         
@@ -118,14 +122,22 @@ def get_preselected_date(
 @router.get("/day-summary")
 def get_day_summary(
     date: str = Query(..., description="Date in YYYY-MM-DD format"),
+    table_id: int | None = Query(default=None, description="Optional table_id for superadmin to specify a table"),
     db: DBSession = Depends(get_db),
-    current_user: Any = Depends(require_roles("superadmin")),
+    current_user: User = Depends(require_roles("superadmin", "table_admin")),
 ):
-    """Get day summary data (profit/loss) as JSON for mobile display."""
+    """Get day summary data (profit/loss) as JSON for mobile display.
+    
+    For table_admin: only shows data for their assigned table.
+    For superadmin: if table_id is provided, shows data for that table; otherwise shows all tables.
+    """
     try:
         d = dt.date.fromisoformat(date)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD")
+
+    # Resolve table_id for the user
+    resolved_table_id = _resolve_table_id_for_user(current_user, table_id)
 
     # Get working day boundaries (20:00 to 18:00 next day)
     start_time, end_time = _get_working_day_boundaries(d)
@@ -135,15 +147,20 @@ def get_day_summary(
     logger = logging.getLogger(__name__)
     logger.info(f"=== DAY SUMMARY DIAGNOSTICS FOR {date} ===")
     logger.info(f"Working day boundaries: {start_time.isoformat()} to {end_time.isoformat()}")
+    logger.info(f"Resolved table_id: {resolved_table_id}")
 
     # Fetch sessions for the working day
-    sessions = (
+    sessions_query = (
         db.query(Session)
         .options(joinedload(Session.dealer), joinedload(Session.waiter))
         .filter(Session.created_at >= start_time, Session.created_at < end_time)
-        .order_by(Session.table_id.asc(), Session.created_at.asc())
-        .all()
     )
+    
+    # Filter by table_id if provided
+    if resolved_table_id is not None:
+        sessions_query = sessions_query.filter(Session.table_id == resolved_table_id)
+    
+    sessions = sessions_query.order_by(Session.table_id.asc(), Session.created_at.asc()).all()
 
     session_ids = [cast(str, s.id) for s in sessions]
 
@@ -167,6 +184,8 @@ def get_day_summary(
     ) if session_ids else []
 
     # Fetch balance adjustments for the working day
+    # Note: Balance adjustments are global (not associated with any table/session),
+    # so they are shown to all users regardless of table filtering
     balance_adjustments = (
         db.query(CasinoBalanceAdjustment)
         .options(joinedload(CasinoBalanceAdjustment.created_by))
@@ -397,33 +416,47 @@ def _calculate_dealer_hours(
     return total_seconds / 3600.0
 
 
-@router.get(
-    "/export-report",
-    dependencies=[Depends(require_roles("superadmin"))],
-)
+@router.get("/export-report")
 def export_report(
     date: str = Query(..., description="YYYY-MM-DD"),
+    table_id: int | None = Query(default=None, description="Optional table_id for superadmin to specify a table"),
     db: DBSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    """Generate comprehensive XLSX report for a specific date."""
+    """Generate comprehensive XLSX report for a specific date.
+    
+    For table_admin: only includes data for their assigned table.
+    For superadmin: if table_id is provided, includes data for that table; otherwise includes all tables.
+    """
+    # Check user role
+    role = cast(str, user.role)
+    if role not in ("superadmin", "table_admin"):
+        raise HTTPException(status_code=403, detail="Forbidden")
+    
     try:
         d = dt.date.fromisoformat(date)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid date format (expected YYYY-MM-DD)")
+
+    # Resolve table_id for the user
+    resolved_table_id = _resolve_table_id_for_user(user, table_id)
 
     # Get working day boundaries (20:00 to 18:00 next day)
     start_time, end_time = _get_working_day_boundaries(d)
 
     # Fetch all data for the working day
     tables = db.query(Table).order_by(Table.id.asc()).all()
-    sessions = (
+    sessions_query = (
         db.query(Session)
         .options(joinedload(Session.dealer), joinedload(Session.waiter))
         .filter(Session.created_at >= start_time, Session.created_at < end_time)
-        .order_by(Session.table_id.asc(), Session.created_at.asc())
-        .all()
     )
+    
+    # Filter by table_id if provided
+    if resolved_table_id is not None:
+        sessions_query = sessions_query.filter(Session.table_id == resolved_table_id)
+    
+    sessions = sessions_query.order_by(Session.table_id.asc(), Session.created_at.asc()).all()
 
     session_ids = [cast(str, s.id) for s in sessions]
 
@@ -450,6 +483,8 @@ def export_report(
     ) if session_ids else []
 
     # Fetch balance adjustments for the working day
+    # Note: Balance adjustments are global (not associated with any table/session),
+    # so they are shown to all users regardless of table filtering
     balance_adjustments = (
         db.query(CasinoBalanceAdjustment)
         .options(joinedload(CasinoBalanceAdjustment.created_by))
