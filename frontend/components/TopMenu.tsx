@@ -9,7 +9,7 @@ export default function TopMenu() {
   const [open, setOpen] = useState(false);
   const router = useRouter();
 
-  const canSuperadmin = useMemo(() => user?.role === "superadmin", [user]);
+  const canAccessAdmin = useMemo(() => user?.role === "superadmin" || user?.role === "table_admin", [user]);
 
   function go(path: string) {
     setOpen(false);
@@ -55,7 +55,7 @@ export default function TopMenu() {
                 Стол
               </button>
 
-              {canSuperadmin && (
+              {canAccessAdmin && (
                 <button
                   className="rounded-xl bg-zinc-100 px-4 py-3 text-left text-zinc-700 focus:outline-none focus:ring-2 focus:ring-zinc-400"
                   onClick={() => go("/admin")}

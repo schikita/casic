@@ -37,7 +37,7 @@ class TableCreateIn(BaseModel):
 
 class UserCreateIn(BaseModel):
     username: str = Field(min_length=3, max_length=120)
-    password: str = Field(min_length=4, max_length=128)
+    password: str | None = Field(default=None, min_length=4, max_length=128)
     role: UserRole
     table_id: int | None = None
     is_active: bool = True

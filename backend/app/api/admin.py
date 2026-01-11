@@ -126,9 +126,22 @@ def create_table(payload: TableCreateIn, db: DBSession = Depends(get_db)) -> Tab
     return TableOut.model_validate(t)
 
 
-@router.get("/users", response_model=list[UserOut], dependencies=[Depends(require_roles("superadmin"))])
-def list_users(db: DBSession = Depends(get_db)) -> list[UserOut]:
-    users = db.query(User).order_by(User.id.asc()).all()
+@router.get("/users", response_model=list[UserOut], dependencies=[Depends(require_roles("superadmin", "table_admin"))])
+def list_users(db: DBSession = Depends(get_db), current_user: User = Depends(get_current_user)) -> list[UserOut]:
+    """
+    List users based on role:
+    - superadmin: sees all users
+    - table_admin: sees only dealer and waiter users
+    """
+    role = cast(str, current_user.role)
+    
+    if role == "superadmin":
+        # Superadmin sees all users
+        users = db.query(User).order_by(User.id.asc()).all()
+    else:
+        # Table admin only sees dealer and waiter users
+        users = db.query(User).filter(User.role.in_(["dealer", "waiter"])).order_by(User.id.asc()).all()
+    
     return [UserOut.model_validate(u) for u in users]
 
 
@@ -143,8 +156,13 @@ def _replace_existing_table_admin(db: DBSession, table_id: int, exclude_user_id:
         existing_admin.table_id = None
 
 
-@router.post("/users", response_model=UserOut, dependencies=[Depends(require_roles("superadmin"))])
-def create_user(payload: UserCreateIn, db: DBSession = Depends(get_db)) -> UserOut:
+@router.post("/users", response_model=UserOut, dependencies=[Depends(require_roles("superadmin", "table_admin"))])
+def create_user(payload: UserCreateIn, db: DBSession = Depends(get_db), current_user: User = Depends(get_current_user)) -> UserOut:
+    """
+    Create user based on role:
+    - superadmin: can only create table_admin users
+    - table_admin: can only create dealer and waiter users
+    """
     username = _normalize_username(payload.username)
     if not username:
         raise HTTPException(status_code=400, detail="Username is required")
@@ -152,30 +170,57 @@ def create_user(payload: UserCreateIn, db: DBSession = Depends(get_db)) -> UserO
     if db.query(User).filter(User.username == username).first():
         raise HTTPException(status_code=400, detail="Username already exists")
 
-    if payload.role == "table_admin":
+    current_role = cast(str, current_user.role)
+    
+    # Validate role permissions based on current user's role
+    if current_role == "superadmin":
+        # Superadmin can only create table_admin users
+        if payload.role != "table_admin":
+            raise HTTPException(status_code=403, detail="Superadmin can only create table_admin users")
+        
         # table_admin requires table_id
         if payload.table_id is None:
             raise HTTPException(status_code=400, detail="table_id is required for table_admin role")
         if not db.query(Table).filter(Table.id == payload.table_id).first():
             raise HTTPException(status_code=404, detail="Table not found")
         _replace_existing_table_admin(db, payload.table_id)
-    elif payload.role == "dealer":
-        # dealer is not associated with tables, will be assigned to sessions
-        if payload.table_id is not None:
-            raise HTTPException(status_code=400, detail="dealer role should not have table_id")
-    elif payload.role == "waiter" and payload.table_id is not None:
-        # waiter can optionally have a table_id, validate it if provided
-        if not db.query(Table).filter(Table.id == payload.table_id).first():
-            raise HTTPException(status_code=404, detail="Table not found")
-
-    # hourly_rate is only applicable for dealer and waiter roles
-    hourly_rate = payload.hourly_rate if payload.role in ("dealer", "waiter") else None
+        
+        # Password is required for table_admin
+        if not payload.password or len(payload.password) < 4:
+            raise HTTPException(status_code=400, detail="Password is required for table_admin role (minimum 4 characters)")
+        
+        # hourly_rate is not applicable for table_admin
+        hourly_rate = None
+        
+        # table_id is required for table_admin
+        table_id = payload.table_id
+        
+    elif current_role == "table_admin":
+        # Table admin can only create dealer and waiter users
+        if payload.role not in ("dealer", "waiter"):
+            raise HTTPException(status_code=403, detail="Table admin can only create dealer and waiter users")
+        
+        # Password is optional for dealer/waiter
+        if payload.password is not None and len(payload.password) < 4:
+            raise HTTPException(status_code=400, detail="Password must be at least 4 characters if provided")
+        
+        # hourly_rate is required for dealer/waiter
+        if payload.hourly_rate is None:
+            raise HTTPException(status_code=400, detail="hourly_rate is required for dealer and waiter roles")
+        
+        hourly_rate = payload.hourly_rate
+        
+        # table_id is not applicable for dealer/waiter
+        table_id = None
+    
+    else:
+        raise HTTPException(status_code=403, detail="Forbidden")
 
     u = User(
         username=username,
-        password_hash=get_password_hash(payload.password),
+        password_hash=get_password_hash(payload.password) if payload.password else None,
         role=payload.role,
-        table_id=payload.table_id if payload.role == "table_admin" else None,
+        table_id=table_id,
         is_active=payload.is_active,
         hourly_rate=hourly_rate,
     )
@@ -185,29 +230,69 @@ def create_user(payload: UserCreateIn, db: DBSession = Depends(get_db)) -> UserO
     return UserOut.model_validate(u)
 
 
-@router.put("/users/{user_id}", response_model=UserOut, dependencies=[Depends(require_roles("superadmin"))])
-def update_user(user_id: int, payload: UserUpdateIn, db: DBSession = Depends(get_db)) -> UserOut:
+@router.put("/users/{user_id}", response_model=UserOut, dependencies=[Depends(require_roles("superadmin", "table_admin"))])
+def update_user(user_id: int, payload: UserUpdateIn, db: DBSession = Depends(get_db), current_user: User = Depends(get_current_user)) -> UserOut:
+    """
+    Update user based on role:
+    - superadmin: can only update table_admin users
+    - table_admin: can only update dealer and waiter users
+    """
     u = db.query(User).filter(User.id == user_id).first()
     if not u:
         raise HTTPException(status_code=404, detail="User not found")
 
+    current_role = cast(str, current_user.role)
+    user_role = cast(str, u.role)
+    
+    # Validate permissions based on current user's role
+    if current_role == "superadmin":
+        # Superadmin can only update table_admin users
+        if user_role != "table_admin":
+            raise HTTPException(status_code=403, detail="Superadmin can only update table_admin users")
+    elif current_role == "table_admin":
+        # Table admin can only update dealer and waiter users
+        if user_role not in ("dealer", "waiter"):
+            raise HTTPException(status_code=403, detail="Table admin can only update dealer and waiter users")
+    else:
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    # Update role if provided
     if payload.role is not None:
+        # Validate role change permissions
+        if current_role == "superadmin" and payload.role != "table_admin":
+            raise HTTPException(status_code=403, detail="Superadmin can only create/update table_admin users")
+        if current_role == "table_admin" and payload.role not in ("dealer", "waiter"):
+            raise HTTPException(status_code=403, detail="Table admin can only create/update dealer and waiter users")
         u.role = cast(Any, str(payload.role))
 
+    # Update table_id if provided
     if payload.table_id is not None:
         u.table_id = cast(Any, payload.table_id)
 
+    # Update is_active if provided
     if payload.is_active is not None:
         u.is_active = cast(Any, payload.is_active)
 
+    # Update password if provided
     if payload.password is not None:
-        u.password_hash = cast(Any, get_password_hash(payload.password))
+        # For table_admin, password is required and cannot be empty
+        if user_role == "table_admin":
+            if len(payload.password) < 4:
+                raise HTTPException(status_code=400, detail="Password must be at least 4 characters for table_admin")
+            u.password_hash = cast(Any, get_password_hash(payload.password))
+        else:
+            # For dealer/waiter, password is optional
+            if len(payload.password) >= 4:
+                u.password_hash = cast(Any, get_password_hash(payload.password))
 
+    # Update hourly_rate if provided
     if payload.hourly_rate is not None:
         u.hourly_rate = cast(Any, payload.hourly_rate)
 
+    # Get the current role after potential changes
     u_role = cast(str, u.role)
 
+    # Validate role-specific constraints
     if u_role == "superadmin":
         u.table_id = cast(Any, None)
         u.hourly_rate = cast(Any, None)  # hourly_rate not applicable for superadmin

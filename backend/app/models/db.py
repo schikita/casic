@@ -44,7 +44,7 @@ class User(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     username = Column(String(120), unique=True, nullable=False, index=True)
-    password_hash = Column(String(255), nullable=False)
+    password_hash = Column(String(255), nullable=True)  # Nullable for dealer/waiter roles
     role = Column(String(32), nullable=False)  # superadmin | table_admin | dealer | waiter
     table_id = Column(Integer, ForeignKey("tables.id"), nullable=True)
     is_active = Column(Boolean, nullable=False, default=True)

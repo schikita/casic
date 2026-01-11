@@ -29,6 +29,17 @@ function AdminPageContent() {
   const searchParams = useSearchParams();
   
   const [tab, setTab] = useState<"tables" | "users" | "purchases">("tables");
+  
+  // Determine available roles based on current user's role
+  const availableRoles = useMemo(() => {
+    if (!user) return [];
+    if (user.role === "superadmin") return ["table_admin"];
+    if (user.role === "table_admin") return ["dealer", "waiter"];
+    return [];
+  }, [user]);
+  
+  // Check if current user can manage tables (superadmin only)
+  const canManageTables = user?.role === "superadmin";
 
   // Read tab from URL query parameter
   useEffect(() => {
@@ -56,6 +67,13 @@ function AdminPageContent() {
   const [newRole, setNewRole] = useState<UserRole>("dealer");
   const [newTableId, setNewTableId] = useState<number | null>(null);
   const [newHourlyRate, setNewHourlyRate] = useState<string>("");
+  
+  // Initialize newRole based on available roles
+  useEffect(() => {
+    if (availableRoles.length > 0 && !availableRoles.includes(newRole)) {
+      setNewRole(availableRoles[0] as UserRole);
+    }
+  }, [availableRoles, newRole]);
 
   // ------- Delete confirmation dialog -------
   const [deleteConfirmUserId, setDeleteConfirmUserId] = useState<number | null>(null);
@@ -168,9 +186,15 @@ function AdminPageContent() {
 
   useEffect(() => {
     if (!user) return;
-    if (user.role !== "superadmin") return;
-    loadAll().catch(() => {});
-  }, [user, loadAll]);
+    // Load data based on user role
+    if (user.role === "superadmin") {
+      loadAll().catch(() => {});
+    } else if (user.role === "table_admin") {
+      // Table admin only needs to load users and tables for dropdown
+      loadUsersOnly().catch(() => {});
+      if (tables.length === 0) loadTablesOnly().catch(() => {});
+    }
+  }, [user, loadAll, loadUsersOnly, loadTablesOnly, tables.length]);
 
   useEffect(() => {
     if (!user) return;
@@ -222,17 +246,33 @@ function AdminPageContent() {
 
     const username = newUsername.trim();
     const password = newPassword;
+    const role = newRole;
 
     if (!isNonEmpty(username)) {
       setError("Введите логин");
       return;
     }
-    if (!isNonEmpty(password) || password.length < MIN_PASSWORD_LENGTH) {
-      setError("Пароль должен быть минимум 4 символа");
+    
+    // Password is required for table_admin, optional for dealer/waiter
+    if (role === "table_admin") {
+      if (!isNonEmpty(password) || password.length < MIN_PASSWORD_LENGTH) {
+        setError("Пароль обязателен для админа стола (минимум 4 символа)");
+        return;
+      }
+    } else {
+      // For dealer/waiter, password is optional but if provided must be valid
+      if (isNonEmpty(password) && password.length < MIN_PASSWORD_LENGTH) {
+        setError("Пароль должен быть минимум 4 символа");
+        return;
+      }
+    }
+    
+    // hourly_rate is required for dealer/waiter
+    if ((role === "dealer" || role === "waiter") && !isNonEmpty(newHourlyRate)) {
+      setError("Ставка в час обязательна для дилера и официанта");
       return;
     }
 
-    const role = newRole;
     const table_id = role === "table_admin" ? newTableId : null;
     const hourly_rate = (role === "dealer" || role === "waiter") && newHourlyRate !== ""
       ? Number(newHourlyRate)
@@ -244,7 +284,7 @@ function AdminPageContent() {
         method: "POST",
         body: JSON.stringify({
           username,
-          password,
+          password: isNonEmpty(password) ? password : null,
           role,
           table_id,
           is_active: true,
@@ -254,7 +294,7 @@ function AdminPageContent() {
 
       setNewUsername("");
       setNewPassword("");
-      setNewRole("dealer");
+      setNewRole(availableRoles[0] as UserRole);
       setNewTableId(null);
       setNewHourlyRate("");
 
@@ -265,7 +305,7 @@ function AdminPageContent() {
     } finally {
       setBusy(false);
     }
-  }, [clearNotices, showOk, newUsername, newPassword, newRole, newTableId, newHourlyRate, loadUsersOnly]);
+  }, [clearNotices, showOk, newUsername, newPassword, newRole, newTableId, newHourlyRate, loadUsersOnly, availableRoles]);
 
   const saveUser = useCallback(async (userId: number) => {
     clearNotices();
@@ -348,7 +388,7 @@ function AdminPageContent() {
     );
   }
 
-  if (user.role !== "superadmin") {
+  if (user.role !== "superadmin" && user.role !== "table_admin") {
     return (
       <RequireAuth>
         <main className="p-4 max-w-md mx-auto">
@@ -370,7 +410,7 @@ function AdminPageContent() {
           <div>
             <div className="text-xl font-bold text-white">Админка</div>
             <div className="text-xs text-zinc-400">
-              Управление системой
+              {user.role === "superadmin" ? "Управление системой" : "Управление персоналом"}
             </div>
           </div>
 
@@ -398,7 +438,7 @@ function AdminPageContent() {
           </div>
         )}
 
-        {tab === "tables" && (
+        {tab === "tables" && canManageTables && (
           <>
             <div className="rounded-xl bg-zinc-900 p-4 mb-3">
               <div className="text-white font-semibold mb-2">Создать стол</div>
@@ -486,7 +526,7 @@ function AdminPageContent() {
                   value={newPassword}
                   onChange={(e) => setNewPassword(e.target.value)}
                   className={inputDark}
-                  placeholder="Пароль"
+                  placeholder={newRole === "table_admin" ? "Пароль *" : "Пароль (если нужно)"}
                   type="password"
                 />
 
@@ -497,10 +537,11 @@ function AdminPageContent() {
                     setNewRole(e.target.value as UserRole);
                   }}
                 >
-                  <option value="dealer">Дилер</option>
-                  <option value="table_admin">Админ стола</option>
-                  <option value="waiter">Официант</option>
-                  <option value="superadmin">Суперадмин</option>
+                  {availableRoles.map((role) => (
+                      <option key={role} value={role}>
+                        {roleLabel(role as UserRole)}
+                      </option>
+                    ))}
                 </select>
 
                 {newRole === "table_admin" && (
@@ -528,7 +569,7 @@ function AdminPageContent() {
                     value={newHourlyRate}
                     onChange={(e) => setNewHourlyRate(e.target.value)}
                     className={inputDark}
-                    placeholder="Ставка в час"
+                    placeholder="Ставка в час *"
                     min={0}
                   />
                 )}
@@ -539,7 +580,8 @@ function AdminPageContent() {
                   disabled={
                     busy ||
                     !isNonEmpty(newUsername) ||
-                    !isNonEmpty(newPassword)
+                    (newRole === "table_admin" && !isNonEmpty(newPassword)) ||
+                    ((newRole === "dealer" || newRole === "waiter") && !isNonEmpty(newHourlyRate))
                   }
                 >
                   Создать
@@ -610,10 +652,11 @@ function AdminPageContent() {
                                 }
                                 disabled={busy}
                               >
-                                <option value="dealer">Дилер</option>
-                                <option value="table_admin">Админ стола</option>
-                                <option value="waiter">Официант</option>
-                                <option value="superadmin">Суперадмин</option>
+                                {availableRoles.map((r) => (
+                                  <option key={r} value={r}>
+                                    {roleLabel(r as UserRole)}
+                                  </option>
+                                ))}
                               </select>
 
                               {role === "table_admin" && (
@@ -666,7 +709,7 @@ function AdminPageContent() {
                                   }))
                                 }
                                 className={inputDark}
-                                placeholder="Новый пароль (если нужно)"
+                                placeholder={role === "table_admin" ? "Новый пароль *" : "Новый пароль (если нужно)"}
                                 type="password"
                                 disabled={busy}
                               />

@@ -31,10 +31,14 @@ def _as_int_or_none(v: Any) -> int | None:
 def login(payload: LoginIn, db: Session = Depends(get_db)) -> LoginOut:
     user = db.query(User).filter(User.username == payload.username.strip()).first()
 
-
     # user.is_active для Pylance = Column[bool], поэтому приводим к bool
     if (user is None) or (not _as_bool(user.is_active)):
         raise HTTPException(status_code=401, detail="Invalid credentials")
+
+    # Prevent dealer and waiter from logging in
+    user_role = _as_str(user.role)
+    if user_role in ("dealer", "waiter"):
+        raise HTTPException(status_code=403, detail="Dealer and waiter accounts cannot log in to the app")
 
     password_hash = _as_str(user.password_hash)
     if not verify_password(payload.password, password_hash):
@@ -42,7 +46,7 @@ def login(payload: LoginIn, db: Session = Depends(get_db)) -> LoginOut:
 
     token = create_access_token(
         subject=str(_as_int_or_none(user.id) or 0),
-        role=_as_str(user.role),
+        role=user_role,
         table_id=_as_int_or_none(user.table_id),
     )
     return LoginOut(access_token=token, user=UserOut.model_validate(user))
