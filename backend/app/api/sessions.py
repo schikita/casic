@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import datetime as dt
+import logging
 from typing import Any, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy.orm import Session as DBSession
+from sqlalchemy.orm import Session as DBSession, joinedload
+
+logger = logging.getLogger(__name__)
 
 from ..core.datetime_utils import utc_now
 from ..core.deps import get_current_user, get_db, require_roles
@@ -485,10 +488,13 @@ def _validate_and_get_session(db: DBSession, session_id: str, user: User) -> Ses
     Raises:
         HTTPException: If session not found or user doesn't have access
     """
+    logger.info(f"Querying session {session_id} with dealer and waiter loaded")
     s = db.query(Session).options(joinedload(Session.dealer), joinedload(Session.waiter)).filter(Session.id == session_id).first()
     if not s:
+        logger.warning(f"Session {session_id} not found")
         raise HTTPException(status_code=404, detail="Session not found")
     _require_session_access(user, s)
+    logger.info(f"Session {session_id} access validated for user {user.username}")
     return s
 
 
@@ -599,35 +605,53 @@ def close_session(
     db: DBSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    # Validate session and user access
-    s = _validate_and_get_session(db, session_id, user)
+    logger.info(f"Attempting to close session {session_id} by user {user.username}")
     
-    # Get all seats for this session
-    seats = _get_session_seats(db, session_id)
-    
-    # Cash out all player chips
-    for seat in seats:
-        seat_total = _as_int(seat.total)
-        if seat_total > 0:
-            # Close credit first (if any)
-            credit_closed = _close_seat_credit(db, s, seat, seat_total, user)
-            
-            # Calculate remaining chips after credit reduction
-            remaining_chips = seat_total - credit_closed
-            
-            # Cash out remaining chips (if any)
-            if remaining_chips > 0:
-                _cashout_seat_chips(db, s, seat, remaining_chips, user)
-            
-            # Set seat total to 0 after cashing out
-            seat.total = cast(Any, 0)
-    
-    # Finalize session
-    _finalize_session(db, s)
-    
-    db.commit()
-    db.refresh(s)
-    return SessionOut.model_validate(s)
+    try:
+        # Validate session and user access
+        logger.info(f"Validating session {session_id}")
+        s = _validate_and_get_session(db, session_id, user)
+        logger.info(f"Session validated: status={s.status}, table_id={s.table_id}")
+        
+        # Get all seats for this session
+        logger.info(f"Getting seats for session {session_id}")
+        seats = _get_session_seats(db, session_id)
+        logger.info(f"Found {len(seats)} seats")
+        
+        # Cash out all player chips
+        for seat in seats:
+            seat_total = _as_int(seat.total)
+            logger.info(f"Processing seat {seat.seat_no}: total={seat_total}")
+            if seat_total > 0:
+                # Close credit first (if any)
+                logger.info(f"Closing credit for seat {seat.seat_no}")
+                credit_closed = _close_seat_credit(db, s, seat, seat_total, user)
+                logger.info(f"Credit closed for seat {seat.seat_no}: {credit_closed}")
+                
+                # Calculate remaining chips after credit reduction
+                remaining_chips = seat_total - credit_closed
+                
+                # Cash out remaining chips (if any)
+                if remaining_chips > 0:
+                    _cashout_seat_chips(db, s, seat, remaining_chips, user)
+                
+                # Set seat total to 0 after cashing out
+                seat.total = cast(Any, 0)
+        
+        # Finalize session
+        logger.info(f"Finalizing session {session_id}")
+        _finalize_session(db, s)
+        
+        logger.info(f"Committing transaction for session {session_id}")
+        db.commit()
+        db.refresh(s)
+        logger.info(f"Session {session_id} closed successfully")
+        return SessionOut.model_validate(s)
+        
+    except Exception as e:
+        logger.error(f"Error closing session {session_id}: {type(e).__name__}: {str(e)}", exc_info=True)
+        db.rollback()
+        raise
 
 
 

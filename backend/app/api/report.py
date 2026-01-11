@@ -128,7 +128,7 @@ def get_day_summary(
 ):
     """Get day summary data (profit/loss) as JSON for mobile display.
     
-    For table_admin: only shows data for their assigned table.
+    For table_admin: only shows data for their assigned table, excludes salaries and balance adjustments.
     For superadmin: if table_id is provided, shows data for that table; otherwise shows all tables.
     """
     try:
@@ -136,18 +136,28 @@ def get_day_summary(
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD")
 
+    # DIAGNOSTIC LOGGING: Initialize logger
+    import logging
+    logger = logging.getLogger(__name__)
+
     # Resolve table_id for the user
     resolved_table_id = _resolve_table_id_for_user(current_user, table_id)
+
+    # Determine if user is table_admin
+    is_table_admin = cast(str, current_user.role) == "table_admin"
+
+    # DIAGNOSTIC LOGGING: User role and table admin status
+    logger.info(f"=== DAY SUMMARY DIAGNOSTICS FOR {date} ===")
+    logger.info(f"--- USER ROLE DIAGNOSTICS ---")
+    logger.info(f"current_user.role: {current_user.role}")
+    logger.info(f"is_table_admin: {is_table_admin}")
+    logger.info(f"resolved_table_id: {resolved_table_id}")
 
     # Get working day boundaries (20:00 to 18:00 next day)
     start_time, end_time = _get_working_day_boundaries(d)
     
     # DIAGNOSTIC LOGGING
-    import logging
-    logger = logging.getLogger(__name__)
-    logger.info(f"=== DAY SUMMARY DIAGNOSTICS FOR {date} ===")
     logger.info(f"Working day boundaries: {start_time.isoformat()} to {end_time.isoformat()}")
-    logger.info(f"Resolved table_id: {resolved_table_id}")
 
     # Fetch sessions for the working day
     sessions_query = (
@@ -186,16 +196,27 @@ def get_day_summary(
     # Fetch balance adjustments for the working day
     # Note: Balance adjustments are global (not associated with any table/session),
     # so they are shown to all users regardless of table filtering
+    # However, table_admins should not see balance adjustments
     balance_adjustments = (
         db.query(CasinoBalanceAdjustment)
         .options(joinedload(CasinoBalanceAdjustment.created_by))
         .filter(CasinoBalanceAdjustment.created_at >= start_time, CasinoBalanceAdjustment.created_at < end_time)
         .order_by(CasinoBalanceAdjustment.created_at.asc())
         .all()
-    )
+    ) if not is_table_admin else []
 
-    # Fetch all staff
-    staff = db.query(User).filter(User.role.in_(["dealer", "waiter"])).all()
+    # DIAGNOSTIC LOGGING: Balance adjustments
+    logger.info(f"--- BALANCE ADJUSTMENTS DIAGNOSTICS ---")
+    logger.info(f"balance_adjustments length: {len(balance_adjustments)}")
+    logger.info(f"is_table_admin: {is_table_admin}")
+
+    # Fetch all staff (only for superadmin)
+    staff = db.query(User).filter(User.role.in_(["dealer", "waiter"])).all() if not is_table_admin else []
+
+    # DIAGNOSTIC LOGGING: Staff
+    logger.info(f"--- STAFF DIAGNOSTICS ---")
+    logger.info(f"staff length: {len(staff)}")
+    logger.info(f"is_table_admin: {is_table_admin}")
 
     # Calculate totals
     total_chip_income_cash = 0  # Cash buyins (positive only)
@@ -235,28 +256,34 @@ def get_day_summary(
         else:
             total_balance_adjustments_expense += abs(amount)
 
-    # Calculate staff salary
+    # Calculate staff salary (only for superadmin)
     total_salary = 0
     staff_details = []
-    for person in staff:
-        role = cast(str, person.role)
-        hourly_rate = int(cast(int, person.hourly_rate)) if person.hourly_rate else 0
+    if not is_table_admin:
+        for person in staff:
+            role = cast(str, person.role)
+            hourly_rate = int(cast(int, person.hourly_rate)) if person.hourly_rate else 0
 
-        if role == "dealer":
-            hours = _calculate_dealer_hours(sessions, int(cast(int, person.id)))
-        else:
-            hours = _calculate_waiter_hours(sessions, int(cast(int, person.id)))
+            if role == "dealer":
+                hours = _calculate_dealer_hours(sessions, int(cast(int, person.id)))
+            else:
+                hours = _calculate_waiter_hours(sessions, int(cast(int, person.id)))
 
-        salary = round(hours * hourly_rate)
-        if hours > 0:
-            staff_details.append({
-                "name": person.username,
-                "role": role,
-                "hours": round(hours, 2),
-                "hourly_rate": hourly_rate,
-                "salary": salary,
-            })
-        total_salary += salary
+            salary = round(hours * hourly_rate)
+            if hours > 0:
+                staff_details.append({
+                    "name": person.username,
+                    "role": role,
+                    "hours": round(hours, 2),
+                    "hourly_rate": hourly_rate,
+                    "salary": salary,
+                })
+            total_salary += salary
+
+    # DIAGNOSTIC LOGGING: Total salary
+    logger.info(f"--- SALARY DIAGNOSTICS ---")
+    logger.info(f"total_salary: {total_salary}")
+    logger.info(f"is_table_admin: {is_table_admin}")
 
     # Calculate net per-seat totals
     total_player_balance = 0
@@ -265,18 +292,20 @@ def get_day_summary(
             total_player_balance += int(cast(int, seat.total))
 
     # Casino result
-    casino_result = total_chip_income_cash - total_player_balance - total_salary - total_chip_income_credit + total_balance_adjustments_profit - total_balance_adjustments_expense
+    # For table_admin: exclude salaries and balance adjustments
+    casino_result = total_chip_income_cash - total_chip_cashout - total_player_balance - total_salary - total_chip_income_credit + total_balance_adjustments_profit - total_balance_adjustments_expense
     
     # DIAGNOSTIC LOGGING
     logger.info(f"--- CALCULATION COMPONENTS ---")
     logger.info(f"total_chip_income_cash (cash buyins): {total_chip_income_cash}")
+    logger.info(f"total_chip_cashout (cashouts to players): {total_chip_cashout}")
     logger.info(f"total_player_balance (chips players have): {total_player_balance}")
     logger.info(f"total_salary: {total_salary}")
     logger.info(f"total_chip_income_credit (credit buyins): {total_chip_income_credit}")
     logger.info(f"total_balance_adjustments_profit: {total_balance_adjustments_profit}")
     logger.info(f"total_balance_adjustments_expense: {total_balance_adjustments_expense}")
     logger.info(f"--- FORMULA ---")
-    logger.info(f"casino_result = {total_chip_income_cash} - {total_player_balance} - {total_salary} - {total_chip_income_credit} + {total_balance_adjustments_profit} - {total_balance_adjustments_expense}")
+    logger.info(f"casino_result = {total_chip_income_cash} - {total_chip_cashout} - {total_player_balance} - {total_salary} - {total_chip_income_credit} + {total_balance_adjustments_profit} - {total_balance_adjustments_expense}")
     logger.info(f"casino_result = {casino_result}")
     logger.info(f"--- BALANCE ADJUSTMENTS DETAIL ---")
     for adj in balance_adjustments_list:
@@ -291,27 +320,54 @@ def get_day_summary(
 
     open_sessions = len([s for s in sessions if s.status == "open"])
 
-    return {
-        "date": date,
-        "income": {
-            "buyin_cash": total_chip_income_cash,
-            "balance_adjustments": total_balance_adjustments_profit,
-        },
-        "expenses": {
-            "salaries": total_salary,
-            "buyin_credit": total_chip_income_credit,
-            "cashout": total_chip_cashout,  # Cash paid back to players
-            "balance_adjustments": total_balance_adjustments_expense,
-        },
-        "result": casino_result,
-        "info": {
-            "player_balance": total_player_balance,
-            "total_sessions": len(sessions),
-            "open_sessions": open_sessions,
-        },
-        "staff": staff_details,
-        "balance_adjustments": balance_adjustments_list,
-    }
+    # DIAGNOSTIC LOGGING: Complete response structure
+    # Build response based on user role
+    if is_table_admin:
+        # For table_admin: exclude salaries and balance adjustments completely
+        response_data = {
+            "date": date,
+            "income": {
+                "buyin_cash": total_chip_income_cash,
+            },
+            "expenses": {
+                "buyin_credit": total_chip_income_credit,
+                "cashout": total_chip_cashout,
+            },
+            "result": casino_result,
+            "info": {
+                "player_balance": total_player_balance,
+                "total_sessions": len(sessions),
+                "open_sessions": open_sessions,
+            },
+        }
+    else:
+        # For superadmin: include all fields
+        response_data = {
+            "date": date,
+            "income": {
+                "buyin_cash": total_chip_income_cash,
+                "balance_adjustments": total_balance_adjustments_profit,
+            },
+            "expenses": {
+                "salaries": total_salary,
+                "buyin_credit": total_chip_income_credit,
+                "cashout": total_chip_cashout,
+                "balance_adjustments": total_balance_adjustments_expense,
+            },
+            "result": casino_result,
+            "info": {
+                "player_balance": total_player_balance,
+                "total_sessions": len(sessions),
+                "open_sessions": open_sessions,
+            },
+            "staff": staff_details,
+            "balance_adjustments": balance_adjustments_list,
+        }
+    logger.info(f"=== COMPLETE RESPONSE STRUCTURE ===")
+    logger.info(f"Response: {response_data}")
+    logger.info(f"=== END RESPONSE DIAGNOSTICS ===")
+
+    return response_data
 
 
 # Style constants
@@ -425,13 +481,16 @@ def export_report(
 ):
     """Generate comprehensive XLSX report for a specific date.
     
-    For table_admin: only includes data for their assigned table.
+    For table_admin: only includes data for their assigned table, excludes salaries and balance adjustments.
     For superadmin: if table_id is provided, includes data for that table; otherwise includes all tables.
     """
     # Check user role
     role = cast(str, user.role)
     if role not in ("superadmin", "table_admin"):
         raise HTTPException(status_code=403, detail="Forbidden")
+    
+    # Determine if user is table_admin
+    is_table_admin = role == "table_admin"
     
     try:
         d = dt.date.fromisoformat(date)
@@ -485,16 +544,17 @@ def export_report(
     # Fetch balance adjustments for the working day
     # Note: Balance adjustments are global (not associated with any table/session),
     # so they are shown to all users regardless of table filtering
+    # However, table_admins should not see balance adjustments
     balance_adjustments = (
         db.query(CasinoBalanceAdjustment)
         .options(joinedload(CasinoBalanceAdjustment.created_by))
         .filter(CasinoBalanceAdjustment.created_at >= start_time, CasinoBalanceAdjustment.created_at < end_time)
         .order_by(CasinoBalanceAdjustment.created_at.asc())
         .all()
-    )
+    ) if not is_table_admin else []
 
-    # Fetch all staff (dealers and waiters)
-    staff = db.query(User).filter(User.role.in_(["dealer", "waiter"])).all()
+    # Fetch all staff (dealers and waiters) - only for superadmin
+    staff = db.query(User).filter(User.role.in_(["dealer", "waiter"])).all() if not is_table_admin else []
 
     # Create workbook
     wb = Workbook()
@@ -506,14 +566,16 @@ def export_report(
     # Sheet 2: Chip Purchase Chronology
     _create_purchases_sheet(wb, purchases, tables, db)
 
-    # Sheet 3: Staff Salaries
-    _create_staff_sheet(wb, sessions, staff, d)
+    # Sheet 3: Staff Salaries (only for superadmin)
+    if not is_table_admin:
+        _create_staff_sheet(wb, sessions, staff, d)
 
-    # Sheet 4: Balance Adjustments
-    _create_balance_adjustments_sheet(wb, balance_adjustments, d)
+    # Sheet 4: Balance Adjustments (only for superadmin)
+    if not is_table_admin:
+        _create_balance_adjustments_sheet(wb, balance_adjustments, d)
 
     # Sheet 5: Summary (Profit/Expense)
-    _create_summary_sheet(wb, sessions, seats_by_session, purchases, staff, balance_adjustments, d)
+    _create_summary_sheet(wb, sessions, seats_by_session, purchases, staff, balance_adjustments, d, is_table_admin)
 
     # Generate file
     output = io.BytesIO()
@@ -829,6 +891,7 @@ def _create_summary_sheet(
     staff: list[User],
     balance_adjustments: list[CasinoBalanceAdjustment],
     report_date: dt.date,
+    is_table_admin: bool = False,
 ):
     """Create summary sheet with profit/expense overview."""
     ws = wb.create_sheet(title="Итоги дня")
@@ -849,28 +912,30 @@ def _create_summary_sheet(
             # Cashouts are always cash payments back to players
             total_chip_cashout += abs(amount)  # Track cashouts separately
 
-    # Calculate balance adjustments
+    # Calculate balance adjustments (only if not table_admin)
     total_balance_adjustments_profit = 0
     total_balance_adjustments_expense = 0
-    for adj in balance_adjustments:
-        amount = int(cast(int, adj.amount))
-        if amount > 0:
-            total_balance_adjustments_profit += amount
-        else:
-            total_balance_adjustments_expense += abs(amount)
+    if not is_table_admin:
+        for adj in balance_adjustments:
+            amount = int(cast(int, adj.amount))
+            if amount > 0:
+                total_balance_adjustments_profit += amount
+            else:
+                total_balance_adjustments_expense += abs(amount)
 
-    # Calculate staff salary
+    # Calculate staff salary (only if not table_admin)
     total_salary = 0
-    for person in staff:
-        role = cast(str, person.role)
-        hourly_rate = int(cast(int, person.hourly_rate)) if person.hourly_rate else 0
+    if not is_table_admin:
+        for person in staff:
+            role = cast(str, person.role)
+            hourly_rate = int(cast(int, person.hourly_rate)) if person.hourly_rate else 0
 
-        if role == "dealer":
-            hours = _calculate_dealer_hours(sessions, int(cast(int, person.id)))
-        else:
-            hours = _calculate_waiter_hours(sessions, int(cast(int, person.id)))
+            if role == "dealer":
+                hours = _calculate_dealer_hours(sessions, int(cast(int, person.id)))
+            else:
+                hours = _calculate_waiter_hours(sessions, int(cast(int, person.id)))
 
-        total_salary += round(hours * hourly_rate)
+            total_salary += round(hours * hourly_rate)
 
     # Calculate net per-seat totals (what players ended with)
     total_player_balance = 0
@@ -896,10 +961,13 @@ def _create_summary_sheet(
     ws.cell(row=row, column=2).fill = MONEY_POSITIVE_FILL
     row += 1
 
-    ws.cell(row=row, column=1, value="Корректировки баланса (доход):")
-    ws.cell(row=row, column=2, value=total_balance_adjustments_profit)
-    ws.cell(row=row, column=2).fill = MONEY_POSITIVE_FILL
-    row += 2
+    # Only show balance adjustments income for superadmin
+    if not is_table_admin:
+        ws.cell(row=row, column=1, value="Корректировки баланса (доход):")
+        ws.cell(row=row, column=2, value=total_balance_adjustments_profit)
+        ws.cell(row=row, column=2).fill = MONEY_POSITIVE_FILL
+        row += 1
+    row += 1
 
     # Expense section
     ws.cell(row=row, column=1, value="РАСХОДЫ")
@@ -907,20 +975,25 @@ def _create_summary_sheet(
     ws.cell(row=row, column=1).fill = MONEY_NEGATIVE_FILL
     row += 1
 
-    ws.cell(row=row, column=1, value="Зарплаты персонала:")
-    ws.cell(row=row, column=2, value=total_salary)
-    ws.cell(row=row, column=2).fill = MONEY_NEGATIVE_FILL
-    row += 1
+    # Only show salaries for superadmin
+    if not is_table_admin:
+        ws.cell(row=row, column=1, value="Зарплаты персонала:")
+        ws.cell(row=row, column=2, value=total_salary)
+        ws.cell(row=row, column=2).fill = MONEY_NEGATIVE_FILL
+        row += 1
 
     ws.cell(row=row, column=1, value="Покупка фишек (кредит):")
     ws.cell(row=row, column=2, value=total_chip_income_credit)
     ws.cell(row=row, column=2).fill = MONEY_NEGATIVE_FILL
     row += 1
 
-    ws.cell(row=row, column=1, value="Корректировки баланса (расход):")
-    ws.cell(row=row, column=2, value=total_balance_adjustments_expense)
-    ws.cell(row=row, column=2).fill = MONEY_NEGATIVE_FILL
-    row += 2
+    # Only show balance adjustments expense for superadmin
+    if not is_table_admin:
+        ws.cell(row=row, column=1, value="Корректировки баланса (расход):")
+        ws.cell(row=row, column=2, value=total_balance_adjustments_expense)
+        ws.cell(row=row, column=2).fill = MONEY_NEGATIVE_FILL
+        row += 1
+    row += 1
 
     # Net result
     # Casino profit = cash_buyin - cashout - player_balance (what players have left) - salary - credit_buyin + adj_profit - adj_expense

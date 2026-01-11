@@ -197,9 +197,7 @@ export default function SummaryPage() {
                   +{formatMoney(data.income.buyin_cash)}
                 </span>
               </div>
-              {data.balance_adjustments
-                .filter((adj) => adj.amount > 0)
-                .map((adj) => (
+              {data.balance_adjustments?.filter((adj) => adj.amount > 0).map((adj) => (
                   <div key={adj.id} className="flex justify-between items-center">
                     <span className="text-zinc-300">{adj.comment}</span>
                     <span className="text-green-400 font-semibold">
@@ -214,12 +212,14 @@ export default function SummaryPage() {
             <div className="rounded-xl bg-zinc-900 p-4">
               <div className="text-xs text-zinc-500 mb-2">РАСХОДЫ</div>
               <div className="space-y-2">
-              <div className="flex justify-between items-center">
-                <span className="text-zinc-300">Зарплаты</span>
-                <span className="text-red-400 font-semibold">
-                  -{formatMoney(data.expenses.salaries)}
-                </span>
-              </div>
+              {data.expenses.salaries !== undefined && (
+                <div className="flex justify-between items-center">
+                  <span className="text-zinc-300">Зарплаты</span>
+                  <span className="text-red-400 font-semibold">
+                    -{formatMoney(data.expenses.salaries)}
+                  </span>
+                </div>
+              )}
               <div className="flex justify-between items-center">
                 <span className="text-zinc-300">Покупка фишек (кредит)</span>
                 <span className="text-red-400 font-semibold">
@@ -232,9 +232,7 @@ export default function SummaryPage() {
                   -{formatMoney(data.expenses.cashout)}
                 </span>
               </div>
-              {data.balance_adjustments
-                .filter((adj) => adj.amount < 0)
-                .map((adj) => (
+              {data.balance_adjustments?.filter((adj) => adj.amount < 0).map((adj) => (
                   <div key={adj.id} className="flex justify-between items-center">
                     <span className="text-zinc-300">{adj.comment}</span>
                     <span className="text-red-400 font-semibold">
@@ -267,7 +265,7 @@ export default function SummaryPage() {
             </div>
 
             {/* Staff */}
-            {data.staff.length > 0 && (
+            {data.staff && data.staff.length > 0 && (
               <div className="rounded-xl bg-zinc-900 p-4">
                 <div className="text-xs text-zinc-500 mb-2">ПЕРСОНАЛ</div>
                 <div className="space-y-3">
