@@ -76,6 +76,7 @@ class StaffOut(BaseModel):
     id: int
     username: str
     role: UserRole
+    hourly_rate: int | None
 
     class Config:
         from_attributes = True
@@ -122,6 +123,8 @@ class SeatOut(BaseModel):
     seat_no: int
     player_name: str | None
     total: int
+    cash: int = 0  # Cash portion of total
+    credit: int = 0  # Credit portion of total
 
     class Config:
         from_attributes = True

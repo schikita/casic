@@ -11,7 +11,7 @@ import TopMenu from "@/components/TopMenu";
 import { RequireAuth } from "@/components/auth/RequireAuth";
 import { useAuth } from "@/components/auth/AuthContext";
 import { apiJson, getSelectedTableId, setSelectedTableId } from "@/lib/api";
-import { normalizeTableId, getErrorMessage, formatTime } from "@/lib/utils";
+import { normalizeTableId, getErrorMessage, formatTime, calculateEarnings, formatMoney } from "@/lib/utils";
 import type { Seat, Session, Table } from "@/lib/types";
 
 function buildOpenSessionUrl(userRole: string | undefined, tableId?: number): string {
@@ -286,6 +286,49 @@ export default function HomePage() {
     return { chips };
   }, [seats]);
 
+  // Calculate current dealer earnings based on their assignment
+  const dealerEarnings = useMemo(() => {
+    if (!session?.dealer || !session.dealer.hourly_rate) {
+      return 0;
+    }
+
+    // Find the current dealer's active assignment (the one without ended_at)
+    const currentAssignment = session.dealer_assignments?.find(
+      (a) => a.dealer_id === session.dealer?.id && !a.ended_at
+    );
+
+    if (currentAssignment) {
+      // Calculate earnings from the assignment start time to now
+      return calculateEarnings(
+        session.dealer.hourly_rate,
+        currentAssignment.started_at,
+        null
+      );
+    }
+
+    // Fallback: if no assignment found, calculate from session start
+    // (this shouldn't happen in normal operation)
+    return calculateEarnings(
+      session.dealer.hourly_rate,
+      session.created_at,
+      null
+    );
+  }, [session]);
+
+  // Calculate waiter earnings from session start to now
+  const waiterEarnings = useMemo(() => {
+    if (!session?.waiter || !session.waiter.hourly_rate) {
+      return 0;
+    }
+
+    // Waiters work the entire session
+    return calculateEarnings(
+      session.waiter.hourly_rate,
+      session.created_at,
+      null
+    );
+  }, [session]);
+
   return (
     <RequireAuth>
       <main className="p-3 max-w-md mx-auto">
@@ -407,6 +450,11 @@ export default function HomePage() {
                   <div className="text-sm font-semibold text-zinc-900">
                     {session.dealer?.username || "—"}
                   </div>
+                  {session.dealer && session.dealer.hourly_rate && (
+                    <div className="text-xs text-zinc-500 mt-1">
+                      Заработано: <span className="font-semibold text-green-600">{formatMoney(dealerEarnings)}</span>
+                    </div>
+                  )}
                 </div>
                 {session.waiter && (
                   <div>
@@ -416,6 +464,11 @@ export default function HomePage() {
                     <div className="text-sm font-semibold text-zinc-900">
                       {session.waiter.username}
                     </div>
+                    {session.waiter.hourly_rate && (
+                      <div className="text-xs text-zinc-500 mt-1">
+                        Заработано: <span className="font-semibold text-green-600">{formatMoney(waiterEarnings)}</span>
+                      </div>
+                    )}
                   </div>
                 )}
               </div>

@@ -22,6 +22,8 @@ export default function SeatActionSheet({
 
   const seatNo = seat?.seat_no ?? 0;
   const playerChips = seat?.total ?? 0;
+  const cashAmount = seat?.cash ?? 0;
+  const creditAmount = seat?.credit ?? 0;
 
   const parsedCustom = useMemo(() => {
     const v = Number(customAmount);
@@ -71,6 +73,28 @@ export default function SeatActionSheet({
             </button>
           </div>
         </div>
+
+        {playerChips > 0 && (cashAmount > 0 || creditAmount > 0) && (
+          <div className="mb-3 rounded-xl bg-zinc-50 border border-zinc-200 p-3">
+            <div className="text-xs text-zinc-500 mb-2">Баланс игрока</div>
+            <div className="flex items-center justify-between mb-1">
+              <span className="text-sm text-zinc-700">Всего:</span>
+              <span className="text-lg font-bold text-zinc-900">{playerChips} ₪</span>
+            </div>
+            {cashAmount > 0 && (
+              <div className="flex items-center justify-between text-sm">
+                <span className="text-zinc-600">Наличные:</span>
+                <span className="font-semibold text-green-600">{cashAmount} ₪</span>
+              </div>
+            )}
+            {creditAmount > 0 && (
+              <div className="flex items-center justify-between text-sm">
+                <span className="text-zinc-600">Кредит:</span>
+                <span className="font-semibold text-orange-600">{creditAmount} ₪</span>
+              </div>
+            )}
+          </div>
+        )}
 
         <div className="mb-3">
           <div className="text-xs text-zinc-500 mb-2">Фишки</div>

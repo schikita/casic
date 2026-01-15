@@ -118,3 +118,57 @@ export function getErrorMessage(e: unknown): string {
     return "Ошибка";
   }
 }
+
+/**
+ * Calculates the hours worked between two timestamps
+ * @param startTime - Start time as ISO string
+ * @param endTime - End time as ISO string (optional, defaults to now)
+ * @returns Hours worked as a decimal number
+ */
+export function calculateHoursWorked(
+  startTime: string,
+  endTime?: string | null
+): number {
+  // Ensure timestamps are treated as UTC by appending 'Z' if not present
+  const normalizeTimestamp = (ts: string): string => {
+    if (!ts) return ts;
+    // If timestamp doesn't end with 'Z' or have timezone info, assume UTC
+    if (!ts.endsWith('Z') && !ts.includes('+') && !ts.includes('T')) {
+      return ts;
+    }
+    if (!ts.endsWith('Z') && ts.includes('T') && !ts.includes('+') && !ts.includes('-', 10)) {
+      return ts + 'Z';
+    }
+    return ts;
+  };
+
+  const start = new Date(normalizeTimestamp(startTime));
+  const end = endTime ? new Date(normalizeTimestamp(endTime)) : new Date();
+
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
+    return 0;
+  }
+
+  const milliseconds = end.getTime() - start.getTime();
+  return Math.max(0, milliseconds / (1000 * 60 * 60));
+}
+
+/**
+ * Calculates earnings based on hourly rate and time worked
+ * @param hourlyRate - Hourly rate in chips (can be null)
+ * @param startTime - Start time as ISO string
+ * @param endTime - End time as ISO string (optional, defaults to now)
+ * @returns Earnings in chips (rounded to nearest integer)
+ */
+export function calculateEarnings(
+  hourlyRate: number | null | undefined,
+  startTime: string,
+  endTime?: string | null
+): number {
+  if (!hourlyRate || hourlyRate <= 0) {
+    return 0;
+  }
+
+  const hours = calculateHoursWorked(startTime, endTime);
+  return Math.round(hours * hourlyRate);
+}

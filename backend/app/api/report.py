@@ -404,12 +404,24 @@ def _style_header(ws, row: int, cols: int):
 
 def _auto_width(ws):
     """Auto-adjust column widths with better minimum width for readability."""
+    from openpyxl.cell.cell import MergedCell
+
     for column_cells in ws.columns:
         max_length = 0
-        column = column_cells[0].column_letter
+        column = None
+
+        # Find the first non-merged cell to get the column letter
+        for cell in column_cells:
+            if not isinstance(cell, MergedCell):
+                column = cell.column_letter
+                break
+
+        if column is None:
+            continue  # Skip if all cells in column are merged
+
         for cell in column_cells:
             try:
-                if cell.value:
+                if not isinstance(cell, MergedCell) and cell.value:
                     max_length = max(max_length, len(str(cell.value)))
             except:
                 pass
@@ -419,6 +431,31 @@ def _auto_width(ws):
         # Ensure minimum width of 12 for very short columns
         adjusted_width = max(adjusted_width, 12)
         ws.column_dimensions[column].width = adjusted_width
+
+
+def _apply_session_border(ws, start_row: int, end_row: int, max_col: int = 5):
+    """Apply a border around a session block to visually separate it."""
+    thin_border_side = Side(style='thin', color='808080')
+
+    for row in range(start_row, end_row + 1):
+        for col in range(1, max_col + 1):
+            cell = ws.cell(row=row, column=col)
+
+            # Determine which borders to apply
+            top = thin_border_side if row == start_row else None
+            bottom = thin_border_side if row == end_row else None
+            left = thin_border_side if col == 1 else None
+            right = thin_border_side if col == max_col else None
+
+            # Only update border if we need to add one
+            if top or bottom or left or right:
+                current_border = cell.border
+                cell.border = Border(
+                    left=left or current_border.left,
+                    right=right or current_border.right,
+                    top=top or current_border.top,
+                    bottom=bottom or current_border.bottom
+                )
 
 
 def _calculate_waiter_hours(
@@ -492,6 +529,93 @@ def _calculate_dealer_hours(
             total_seconds += (end - start).total_seconds()
 
     return total_seconds / 3600.0
+
+
+def _calculate_session_dealer_earnings(
+    session: Session,
+    db,
+) -> list[dict]:
+    """
+    Calculate earnings for all dealers who worked on this session.
+    Returns list of dicts with dealer info, hours worked, and salary.
+    """
+    from ..models.db import SessionDealerAssignment, User
+
+    earnings = []
+    now = dt.datetime.utcnow()
+
+    # Get all dealer assignments for this session
+    if session.dealer_assignments:
+        # Use dealer assignments (new method)
+        for assignment in session.dealer_assignments:
+            dealer = assignment.dealer
+            if not dealer:
+                continue
+
+            start = cast(dt.datetime, assignment.started_at)
+            end = cast(dt.datetime, assignment.ended_at) if assignment.ended_at else (
+                cast(dt.datetime, session.closed_at) if session.closed_at else now
+            )
+            hours = (end - start).total_seconds() / 3600.0
+            hourly_rate = int(cast(int, dealer.hourly_rate)) if dealer.hourly_rate else 0
+            salary = round(hours * hourly_rate)
+
+            earnings.append({
+                "dealer_name": cast(str, dealer.username),
+                "hours": hours,
+                "hourly_rate": hourly_rate,
+                "salary": salary,
+            })
+    elif session.dealer_id:
+        # Fallback to legacy method for sessions without dealer_assignments
+        dealer = db.query(User).filter(User.id == session.dealer_id).first()
+        if dealer:
+            start = cast(dt.datetime, session.created_at)
+            end = cast(dt.datetime, session.closed_at) if session.closed_at else now
+            hours = (end - start).total_seconds() / 3600.0
+            hourly_rate = int(cast(int, dealer.hourly_rate)) if dealer.hourly_rate else 0
+            salary = round(hours * hourly_rate)
+
+            earnings.append({
+                "dealer_name": cast(str, dealer.username),
+                "hours": hours,
+                "hourly_rate": hourly_rate,
+                "salary": salary,
+            })
+
+    return earnings
+
+
+def _calculate_session_waiter_earnings(
+    session: Session,
+    db,
+) -> dict | None:
+    """
+    Calculate earnings for the waiter who worked on this session.
+    Returns dict with waiter info, hours worked, and salary, or None if no waiter.
+    """
+    from ..models.db import User
+
+    if not session.waiter_id:
+        return None
+
+    waiter = db.query(User).filter(User.id == session.waiter_id).first()
+    if not waiter:
+        return None
+
+    now = dt.datetime.utcnow()
+    start = cast(dt.datetime, session.created_at)
+    end = cast(dt.datetime, session.closed_at) if session.closed_at else now
+    hours = (end - start).total_seconds() / 3600.0
+    hourly_rate = int(cast(int, waiter.hourly_rate)) if waiter.hourly_rate else 0
+    salary = round(hours * hourly_rate)
+
+    return {
+        "waiter_name": cast(str, waiter.username),
+        "hours": hours,
+        "hourly_rate": hourly_rate,
+        "salary": salary,
+    }
 
 
 @router.get("/export-report")
@@ -587,7 +711,7 @@ def export_report(
     wb.remove(wb.active)  # Remove default sheet
 
     # Sheet 1: Table States (per-seat summary for each table)
-    _create_table_states_sheet(wb, tables, sessions, seats_by_session)
+    _create_table_states_sheet(wb, tables, sessions, seats_by_session, db)
 
     # Sheet 2: Chip Purchase Chronology
     _create_purchases_sheet(wb, purchases, tables, db)
@@ -630,8 +754,9 @@ def _create_table_states_sheet(
     tables: list[Table],
     sessions: list[Session],
     seats_by_session: dict[str, list[Seat]],
+    db,
 ):
-    """Create sheet with table states - seats, players, and totals."""
+    """Create sheet with table states - seats, players, totals, and staff earnings."""
     ws = wb.create_sheet(title="Состояние столов")
 
     if not sessions:
@@ -639,22 +764,46 @@ def _create_table_states_sheet(
         ws.cell(row=1, column=1).font = Font(italic=True)
         return
 
+    # Define visual styles for tables and sessions
+    table_header_fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")  # Blue
+    session_header_fill = PatternFill(start_color="E7E6E6", end_color="E7E6E6", fill_type="solid")  # Light gray
+    thick_border = Border(
+        left=Side(style='thick'),
+        right=Side(style='thick'),
+        top=Side(style='thick'),
+        bottom=Side(style='thick')
+    )
+    thin_border = Border(
+        left=Side(style='thin'),
+        right=Side(style='thin'),
+        top=Side(style='thin'),
+        bottom=Side(style='thin')
+    )
+
     row = 1
     for table in tables:
         table_sessions = [s for s in sessions if s.table_id == table.id]
         if not table_sessions:
             continue
 
-        # Table header
-        ws.cell(row=row, column=1, value=f"Стол: {table.name}")
-        ws.cell(row=row, column=1).font = Font(bold=True, size=14)
+        # Table header with blue background and thick border
+        table_header_cell = ws.cell(row=row, column=1, value=f"Стол: {table.name}")
+        table_header_cell.font = Font(bold=True, size=14, color="FFFFFF")
+        table_header_cell.fill = table_header_fill
+        table_header_cell.border = thick_border
+        # Merge cells for table header to span across columns
+        ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=5)
+        for col in range(1, 6):
+            ws.cell(row=row, column=col).fill = table_header_fill
+            ws.cell(row=row, column=col).border = thick_border
         row += 1
 
         for session in table_sessions:
+            session_start_row = row  # Track where this session starts
             sid = cast(str, session.id)
             seats = seats_by_session.get(sid, [])
 
-            # Session info
+            # Session info with gray background and thin border
             start_time = cast(dt.datetime, session.created_at).strftime("%H:%M")
             if session.closed_at:
                 end_time = cast(dt.datetime, session.closed_at).strftime("%H:%M")
@@ -667,10 +816,18 @@ def _create_table_states_sheet(
             status_text = "закрыта" if session.status == "closed" else "открыта"
             chips_in_play = int(cast(int, session.chips_in_play))
 
-            ws.cell(row=row, column=1, value=f"Сессия: {start_time} - {end_time}")
-            ws.cell(row=row, column=2, value=f"Дилер: {dealer_name}")
-            ws.cell(row=row, column=3, value=f"Официант: {waiter_name}")
-            ws.cell(row=row, column=4, value=f"Статус: {status_text}")
+            # Session header row with light gray background
+            session_cells = [
+                (1, f"Сессия: {start_time} - {end_time}"),
+                (2, f"Дилер: {dealer_name}"),
+                (3, f"Официант: {waiter_name}"),
+                (4, f"Статус: {status_text}")
+            ]
+            for col, value in session_cells:
+                cell = ws.cell(row=row, column=col, value=value)
+                cell.fill = session_header_fill
+                cell.border = thin_border
+                cell.font = Font(bold=True)
             row += 1
 
             # Chips in play info
@@ -711,7 +868,70 @@ def _create_table_states_sheet(
                 cell.fill = MONEY_POSITIVE_FILL
             elif session_total < 0:
                 cell.fill = MONEY_NEGATIVE_FILL
-            row += 2
+            row += 1
+
+            # Staff earnings section
+            dealer_earnings = _calculate_session_dealer_earnings(session, db)
+            waiter_earnings = _calculate_session_waiter_earnings(session, db)
+
+            if dealer_earnings or waiter_earnings:
+                row += 1  # Add spacing
+                ws.cell(row=row, column=1, value="Зарплаты персонала:")
+                ws.cell(row=row, column=1).font = Font(bold=True, italic=True)
+                row += 1
+
+                # Dealer earnings header
+                if dealer_earnings:
+                    staff_headers = ["Сотрудник", "Роль", "Часов", "Ставка/час", "Зарплата"]
+                    for col, h in enumerate(staff_headers, 1):
+                        ws.cell(row=row, column=col, value=h)
+                    _style_header(ws, row, len(staff_headers))
+                    row += 1
+
+                    # Display each dealer's earnings
+                    total_dealer_salary = 0
+                    for earning in dealer_earnings:
+                        ws.cell(row=row, column=1, value=earning["dealer_name"])
+                        ws.cell(row=row, column=2, value="Дилер")
+                        ws.cell(row=row, column=3, value=round(earning["hours"], 2))
+                        ws.cell(row=row, column=4, value=earning["hourly_rate"])
+                        salary_cell = ws.cell(row=row, column=5, value=earning["salary"])
+                        salary_cell.fill = MONEY_NEGATIVE_FILL  # Salary is an expense
+                        total_dealer_salary += earning["salary"]
+                        row += 1
+
+                    # Show total if multiple dealers
+                    if len(dealer_earnings) > 1:
+                        ws.cell(row=row, column=4, value="Итого дилеры:")
+                        ws.cell(row=row, column=4).font = Font(bold=True)
+                        total_cell = ws.cell(row=row, column=5, value=total_dealer_salary)
+                        total_cell.font = Font(bold=True)
+                        total_cell.fill = MONEY_NEGATIVE_FILL
+                        row += 1
+
+                # Waiter earnings
+                if waiter_earnings:
+                    # Add header if not already added
+                    if not dealer_earnings:
+                        staff_headers = ["Сотрудник", "Роль", "Часов", "Ставка/час", "Зарплата"]
+                        for col, h in enumerate(staff_headers, 1):
+                            ws.cell(row=row, column=col, value=h)
+                        _style_header(ws, row, len(staff_headers))
+                        row += 1
+
+                    ws.cell(row=row, column=1, value=waiter_earnings["waiter_name"])
+                    ws.cell(row=row, column=2, value="Официант")
+                    ws.cell(row=row, column=3, value=round(waiter_earnings["hours"], 2))
+                    ws.cell(row=row, column=4, value=waiter_earnings["hourly_rate"])
+                    salary_cell = ws.cell(row=row, column=5, value=waiter_earnings["salary"])
+                    salary_cell.fill = MONEY_NEGATIVE_FILL  # Salary is an expense
+                    row += 1
+
+            # Apply border around the entire session block
+            session_end_row = row - 1
+            _apply_session_border(ws, session_start_row, session_end_row, max_col=5)
+
+            row += 1  # Extra space after session
 
         row += 1  # Extra space between tables
 

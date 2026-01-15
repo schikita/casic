@@ -28,6 +28,37 @@ from ..services.credit_service import CreditService
 router = APIRouter(prefix="/api/sessions", tags=["sessions"])
 
 
+def _get_seat_credit(db: DBSession, session_id: str, seat_no: int) -> int:
+    """Get total credit for a specific seat."""
+    credit_purchases = (
+        db.query(ChipPurchase)
+        .filter(
+            ChipPurchase.session_id == session_id,
+            ChipPurchase.seat_no == seat_no,
+            ChipPurchase.payment_type == "credit",
+            ChipPurchase.amount > 0,
+        )
+        .all()
+    )
+    return sum(int(cast(int, p.amount)) for p in credit_purchases)
+
+
+def _build_seat_out(seat: Seat, db: DBSession, session_id: str) -> SeatOut:
+    """Build SeatOut response with cash/credit breakdown."""
+    seat_no = int(cast(int, seat.seat_no))
+    total = int(cast(int, seat.total))
+    credit = _get_seat_credit(db, session_id, seat_no)
+    cash = max(0, total - credit)
+
+    return SeatOut(
+        seat_no=seat_no,
+        player_name=seat.player_name,
+        total=total,
+        cash=cash,
+        credit=credit,
+    )
+
+
 def _role(user):
     return cast(str, user.role)
 
@@ -334,7 +365,8 @@ def list_seats(
         .order_by(Seat.seat_no.asc())
         .all()
     )
-    return [SeatOut.model_validate(x) for x in seats]
+
+    return [_build_seat_out(seat, db, session_id) for seat in seats]
 
 
 @router.put(
@@ -365,7 +397,7 @@ def assign_player(
     seat.player_name = cast(Any, payload.player_name)
     db.commit()
     db.refresh(seat)
-    return SeatOut.model_validate(seat)
+    return _build_seat_out(seat, db, session_id)
 
 
 @router.get(
@@ -532,7 +564,7 @@ def add_chips(
 
     db.commit()
     db.refresh(seat)
-    return SeatOut.model_validate(seat)
+    return _build_seat_out(seat, db, session_id)
 
 
 @router.post(
@@ -577,7 +609,7 @@ def undo_last(
     db.delete(last)
     db.commit()
     db.refresh(seat)
-    return SeatOut.model_validate(seat)
+    return _build_seat_out(seat, db, session_id)
 
 
 def _validate_and_get_session(db: DBSession, session_id: str, user: User) -> Session:

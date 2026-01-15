@@ -19,6 +19,7 @@ export type Staff = {
   id: number;
   username: string;
   role: UserRole;
+  hourly_rate: number | null;
 };
 
 export type SessionDealerAssignment = {
@@ -49,6 +50,8 @@ export type Seat = {
   seat_no: number;
   player_name: string | null;
   total: number;
+  cash: number;
+  credit: number;
 };
 
 export type ChipPurchase = {
