@@ -170,6 +170,16 @@ def create_app() -> FastAPI:
                 conn.commit()
                 logger.info("Successfully created session_dealer_assignments table")
 
+        # Migrate: add rake column to session_dealer_assignments if missing
+        with engine.connect() as conn:
+            try:
+                conn.execute(text("SELECT rake FROM session_dealer_assignments LIMIT 1"))
+            except Exception:
+                logger.info("Adding rake column to session_dealer_assignments")
+                conn.execute(text("ALTER TABLE session_dealer_assignments ADD COLUMN rake INTEGER"))
+                conn.commit()
+                logger.info("Successfully added rake column to session_dealer_assignments")
+
         # Migrate: populate session_dealer_assignments from existing sessions with dealers
         db = SessionLocal()
         try:

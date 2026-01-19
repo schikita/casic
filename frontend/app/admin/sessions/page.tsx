@@ -8,12 +8,6 @@ import { apiFetch } from "@/lib/api";
 import { formatMoney, formatTime } from "@/lib/utils";
 import type { Table } from "@/lib/types";
 
-type SessionCredit = {
-  seat_no: number;
-  player_name: string | null;
-  amount: number;
-};
-
 type SessionDealerAssignment = {
   id: number;
   dealer_id: number;
@@ -38,7 +32,6 @@ type ClosedSession = {
   total_rake: number;
   total_buyins: number;
   total_cashouts: number;
-  credits: SessionCredit[];
   dealer_assignments: SessionDealerAssignment[];
 };
 
@@ -114,15 +107,6 @@ export default function SessionsPage() {
   const [selectedTableId, setSelectedTableId] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  
-  // Credit close confirmation state
-  const [confirmCloseCredit, setConfirmCloseCredit] = useState<{
-    sessionId: string;
-    seatNo: number;
-    playerName: string | null;
-    amount: number;
-  } | null>(null);
-  const [closingCredit, setClosingCredit] = useState(false);
 
   const loadTables = useCallback(async () => {
     try {
@@ -163,37 +147,6 @@ export default function SessionsPage() {
       setLoading(false);
     }
   }, [selectedTableId]);
-
-  const closeCredit = useCallback(async (sessionId: string, seatNo: number, amount: number) => {
-    setClosingCredit(true);
-    setError(null);
-    try {
-      const res = await apiFetch("/api/admin/close-credit", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          session_id: sessionId,
-          seat_no: seatNo,
-          amount: amount,
-        }),
-      });
-
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        throw new Error(err.detail || "Ошибка закрытия кредита");
-      }
-
-      // Reload sessions to show updated credit status
-      await loadSessions();
-      setConfirmCloseCredit(null);
-    } catch (e: unknown) {
-      setError((e as Error)?.message ?? "Ошибка");
-    } finally {
-      setClosingCredit(false);
-    }
-  }, [loadSessions]);
 
   // Load tables on mount
   useEffect(() => {
@@ -405,45 +358,6 @@ export default function SessionsPage() {
                           <span className="text-white font-semibold">{formatMoney(session.total_rake)}</span>
                         </div>
                       </div>
-
-                      {/* Credits section */}
-                      {session.credits.length > 0 && (
-                        <div className="mt-4 pt-4 border-t border-zinc-800">
-                          <div className="text-white font-semibold mb-3 text-sm">
-                            Кредиты игроков
-                          </div>
-                          <div className="space-y-2">
-                            {session.credits.map((credit) => (
-                              <div
-                                key={`${session.id}-${credit.seat_no}`}
-                                className="flex items-center justify-between bg-zinc-800 rounded-xl px-3 py-2"
-                              >
-                                <div className="flex-1">
-                                  <div className="text-white text-sm">
-                                    {credit.player_name || `Место ${credit.seat_no}`}
-                                  </div>
-                                  <div className="text-xs text-zinc-400">
-                                    Место {credit.seat_no}
-                                  </div>
-                                </div>
-                                <button
-                                  onClick={() =>
-                                    setConfirmCloseCredit({
-                                      sessionId: session.id,
-                                      seatNo: credit.seat_no,
-                                      playerName: credit.player_name,
-                                      amount: credit.amount,
-                                    })
-                                  }
-                                  className="rounded-xl bg-green-600 text-white px-3 py-2 text-sm font-semibold active:bg-green-700 disabled:opacity-60 focus:outline-none focus:ring-2 focus:ring-white/15"
-                                >
-                                  {formatMoney(credit.amount)} ₪
-                                </button>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      )}
                     </div>
                   ))}
                 </div>
@@ -451,54 +365,6 @@ export default function SessionsPage() {
             );
           })}
         </div>
-
-        {/* Credit close confirmation modal */}
-        {confirmCloseCredit && (
-          <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
-            <div className="rounded-xl bg-zinc-900 p-6 max-w-sm w-full">
-              <div className="text-white font-semibold text-lg mb-2">
-                Подтверждение закрытия кредита
-              </div>
-              <div className="text-white/80 mb-4 text-sm">
-                Игрок{" "}
-                <span className="font-semibold text-white">
-                  {confirmCloseCredit.playerName || `Место ${confirmCloseCredit.seatNo}`}
-                </span>{" "}
-                принёс наличные для закрытия кредита?
-              </div>
-              <div className="rounded-xl bg-zinc-800 p-3 mb-4">
-                <div className="flex justify-between text-zinc-300 text-sm">
-                  <span>Сумма кредита:</span>
-                  <span className="text-white font-semibold">
-                    {formatMoney(confirmCloseCredit.amount)} ₪
-                  </span>
-                </div>
-              </div>
-              <div className="flex gap-2">
-                <button
-                  className="flex-1 rounded-xl bg-zinc-800 text-white px-4 py-3 font-semibold disabled:opacity-50 focus:outline-none focus:ring-2 focus:ring-white/15"
-                  onClick={() => setConfirmCloseCredit(null)}
-                  disabled={closingCredit}
-                >
-                  Отмена
-                </button>
-                <button
-                  className="flex-1 rounded-xl bg-green-600 text-white px-4 py-3 font-semibold disabled:opacity-50 active:bg-green-700 focus:outline-none focus:ring-2 focus:ring-white/15"
-                  onClick={() =>
-                    closeCredit(
-                      confirmCloseCredit.sessionId,
-                      confirmCloseCredit.seatNo,
-                      confirmCloseCredit.amount
-                    )
-                  }
-                  disabled={closingCredit}
-                >
-                  {closingCredit ? "Закрытие..." : "Да, закрыть"}
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
       </main>
     </RequireAuth>
   );

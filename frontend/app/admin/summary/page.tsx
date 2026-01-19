@@ -52,12 +52,12 @@ interface SummaryData {
   date: string;
   working_day_start: string;
   working_day_end: string;
-  income: { gross_rake: number; credit_part: number; balance_adjustments: number };
+  income: { gross_rake: number; balance_adjustments: number };
   expenses: { salaries: number; balance_adjustments: number };
   result: number;
   info: {
     buyin_cash: number;
-    buyin_credit: number;
+    buyin_credit: number;  // Informational only, not shown in summary
     cashout: number;
     player_balance: number;
     total_sessions: number;
@@ -211,16 +211,9 @@ export default function SummaryPage() {
               <div className="space-y-2">
                 <div className="flex justify-between items-center">
                   <span className="text-zinc-300">Рейк (грязный)</span>
-                  <div className="flex items-baseline gap-2">
-                    <span className="text-green-400 font-semibold">
-                      +{formatMoney(data.income.gross_rake)}
-                    </span>
-                    {data.income.credit_part > 0 && (
-                      <span className="text-red-400 font-semibold text-xs">
-                        (кредит {formatMoney(data.income.credit_part)})
-                      </span>
-                    )}
-                  </div>
+                  <span className="text-green-400 font-semibold">
+                    +{formatMoney(data.income.gross_rake)}
+                  </span>
                 </div>
               {data.balance_adjustments?.filter((adj) => adj.amount > 0).map((adj) => (
                   <div key={adj.id} className="flex justify-between items-center">
@@ -264,14 +257,7 @@ export default function SummaryPage() {
                   <span className="text-zinc-400">Покупка фишек (наличные)</span>
                   <span className="text-zinc-300">{formatMoney(data.info.buyin_cash)}</span>
                 </div>
-                <div className="flex justify-between items-center">
-                  <span className="text-zinc-400">Выдано в кредит</span>
-                  <span className="text-zinc-300">{formatMoney(data.info.buyin_credit)}</span>
-                </div>
-                <div className="flex justify-between items-center">
-                  <span className="text-zinc-400">Выдано игрокам (кэшаут)</span>
-                  <span className="text-zinc-300">{formatMoney(data.info.cashout)}</span>
-                </div>
+
               <div className="flex justify-between items-center">
                 <span className="text-zinc-400">Баланс игроков</span>
                 <span className="text-zinc-300">

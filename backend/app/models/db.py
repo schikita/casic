@@ -161,6 +161,7 @@ class SessionDealerAssignment(Base):
     dealer_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
     started_at = Column(DateTime, nullable=False, default=utc_now)
     ended_at = Column(DateTime, nullable=True)  # NULL means currently active
+    rake = Column(Integer, nullable=True)  # Rake brought by this dealer during their shift
 
     session = relationship("Session", back_populates="dealer_assignments")
     dealer = relationship("User")

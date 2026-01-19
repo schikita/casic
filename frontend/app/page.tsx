@@ -8,6 +8,7 @@ import CashConfirmationModal from "@/components/CashConfirmationModal";
 import SessionCloseConfirmationModal from "@/components/SessionCloseConfirmationModal";
 import ReplaceDealerModal from "@/components/ReplaceDealerModal";
 import AddDealerModal from "@/components/AddDealerModal";
+import RemoveDealerModal from "@/components/RemoveDealerModal";
 import TopMenu from "@/components/TopMenu";
 import { RequireAuth } from "@/components/auth/RequireAuth";
 import { useAuth } from "@/components/auth/AuthContext";
@@ -44,6 +45,7 @@ export default function HomePage() {
   const [creditByPlayer, setCreditByPlayer] = useState<Array<{ seat_no: number; player_name: string | null; amount: number }>>([]);
   const [showReplaceDealerModal, setShowReplaceDealerModal] = useState<boolean>(false);
   const [showAddDealerModal, setShowAddDealerModal] = useState<boolean>(false);
+  const [removeDealerInfo, setRemoveDealerInfo] = useState<{ assignmentId: number; dealerName: string } | null>(null);
   const [showDealerHistory, setShowDealerHistory] = useState<boolean>(false);
   const [activeTab, setActiveTab] = useState<"table" | "dealers">("table");
   const [rake, setRake] = useState<{ total_rake: number; total_buyins: number; total_cashouts: number; total_credit: number } | null>(null);
@@ -253,7 +255,7 @@ export default function HomePage() {
     }
   }, [session]);
 
-  const confirmCloseSession = useCallback(async () => {
+  const confirmCloseSession = useCallback(async (dealerRakes: Array<{ assignment_id: number; rake: number }>) => {
     if (!session) return;
     setError(null);
     setBusy(true);
@@ -262,6 +264,7 @@ export default function HomePage() {
         "/api/sessions/" + session.id + "/close",
         {
           method: "POST",
+          body: JSON.stringify({ dealer_rakes: dealerRakes }),
         }
       );
       setSession(null);
@@ -274,32 +277,10 @@ export default function HomePage() {
     }
   }, [session]);
 
-  const handleRemoveDealer = useCallback(async (assignmentId: number) => {
+  const handleRemoveDealer = useCallback((assignmentId: number, dealerName: string) => {
     if (!session || !tableId) return;
-
-    // Confirm with user
-    if (!confirm("Вы уверены, что хотите завершить смену этого дилера?")) {
-      return;
-    }
-
-    setError(null);
-    setBusy(true);
-    try {
-      await apiJson<Session>(
-        "/api/sessions/" + session.id + "/remove-dealer",
-        {
-          method: "POST",
-          body: JSON.stringify({ assignment_id: assignmentId }),
-        }
-      );
-      // Reload session to get updated dealer assignments
-      loadOpenSession(tableId);
-    } catch (e) {
-      setError(getErrorMessage(e) || "Ошибка");
-    } finally {
-      setBusy(false);
-    }
-  }, [session, tableId, loadOpenSession]);
+    setRemoveDealerInfo({ assignmentId, dealerName });
+  }, [session, tableId]);
 
   useEffect(() => {
     if (!user) return;
@@ -724,7 +705,7 @@ export default function HomePage() {
                                 {(user?.role === "superadmin" || user?.role === "table_admin") && hasMultipleDealers && (
                                   <button
                                     className="ml-2 rounded-lg bg-red-600 text-white px-3 py-1 text-xs active:bg-red-700 disabled:opacity-50"
-                                    onClick={() => handleRemoveDealer(assignment.id)}
+                                    onClick={() => handleRemoveDealer(assignment.id, assignment.dealer_username)}
                                     disabled={busy}
                                   >
                                     Завершить
@@ -863,6 +844,11 @@ export default function HomePage() {
               open={showCloseModal}
               creditAmount={creditAmount}
               creditByPlayer={creditByPlayer}
+              activeDealers={
+                session.dealer_assignments
+                  ?.filter((a) => !a.ended_at)
+                  .map((a) => ({ id: a.id, dealer_username: a.dealer_username })) || []
+              }
               onConfirm={confirmCloseSession}
               onCancel={() => setShowCloseModal(false)}
               loading={busy}
@@ -882,6 +868,17 @@ export default function HomePage() {
               onClose={() => setShowAddDealerModal(false)}
               onDealerAdded={() => tableId && loadOpenSession(tableId)}
             />
+
+            {removeDealerInfo && (
+              <RemoveDealerModal
+                open={true}
+                sessionId={session.id}
+                assignmentId={removeDealerInfo.assignmentId}
+                dealerName={removeDealerInfo.dealerName}
+                onClose={() => setRemoveDealerInfo(null)}
+                onDealerRemoved={() => tableId && loadOpenSession(tableId)}
+              />
+            )}
 
             {busy && (
               <div className="fixed bottom-4 left-0 right-0 flex justify-center pointer-events-none">

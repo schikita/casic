@@ -1,16 +1,29 @@
 "use client";
 
+import { useState, useEffect } from "react";
+
 type CreditByPlayer = {
   seat_no: number;
   player_name: string | null;
   amount: number;
 };
 
+type ActiveDealer = {
+  id: number;
+  dealer_username: string;
+};
+
+type DealerRake = {
+  assignment_id: number;
+  rake: number;
+};
+
 type Props = {
   open: boolean;
   creditAmount: number;
   creditByPlayer?: CreditByPlayer[];
-  onConfirm: () => void;
+  activeDealers: ActiveDealer[];
+  onConfirm: (dealerRakes: DealerRake[]) => void;
   onCancel: () => void;
   loading?: boolean;
 };
@@ -19,10 +32,41 @@ export default function SessionCloseConfirmationModal({
   open,
   creditAmount,
   creditByPlayer = [],
+  activeDealers,
   onConfirm,
   onCancel,
   loading = false,
 }: Props) {
+  const [dealerRakes, setDealerRakes] = useState<Record<number, string>>({});
+  const [error, setError] = useState<string | null>(null);
+
+  // Reset rake inputs when modal opens
+  useEffect(() => {
+    if (open) {
+      const initial: Record<number, string> = {};
+      activeDealers.forEach((d) => {
+        initial[d.id] = "";
+      });
+      setDealerRakes(initial);
+      setError(null);
+    }
+  }, [open, activeDealers]);
+
+  const handleConfirm = () => {
+    // Validate all rake inputs
+    const rakes: DealerRake[] = [];
+    for (const dealer of activeDealers) {
+      const value = parseInt(dealerRakes[dealer.id] || "0", 10);
+      if (isNaN(value) || value < 0) {
+        setError(`Введите корректную сумму рейка для ${dealer.dealer_username}`);
+        return;
+      }
+      rakes.push({ assignment_id: dealer.id, rake: value });
+    }
+    setError(null);
+    onConfirm(rakes);
+  };
+
   if (!open) return null;
 
   const hasCredit = creditAmount > 0;
@@ -89,10 +133,49 @@ export default function SessionCloseConfirmationModal({
           </div>
         )}
 
+        {/* Dealer rake inputs */}
+        {activeDealers.length > 0 && (
+          <div className="mb-6 rounded-xl bg-zinc-50 border border-zinc-200 p-4">
+            <div className="text-sm text-zinc-700 font-semibold mb-3">
+              Рейк по дилерам
+            </div>
+            <div className="space-y-3">
+              {activeDealers.map((dealer) => (
+                <div key={dealer.id}>
+                  <label className="block text-xs text-zinc-600 mb-1">
+                    {dealer.dealer_username}
+                  </label>
+                  <input
+                    type="number"
+                    inputMode="numeric"
+                    min="0"
+                    className="w-full rounded-xl border border-zinc-300 bg-white text-black px-3 py-2 text-base focus:outline-none focus:ring-2 focus:ring-zinc-400"
+                    value={dealerRakes[dealer.id] || ""}
+                    onChange={(e) =>
+                      setDealerRakes((prev) => ({
+                        ...prev,
+                        [dealer.id]: e.target.value,
+                      }))
+                    }
+                    placeholder="0"
+                    disabled={loading}
+                  />
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {error && (
+          <div className="mb-4 rounded-xl bg-red-50 text-red-700 px-3 py-2 text-sm">
+            {error}
+          </div>
+        )}
+
         <div className="space-y-3">
           <button
             className="w-full rounded-xl bg-red-600 text-white py-4 font-bold text-lg active:bg-red-700 disabled:opacity-60 focus:outline-none focus:ring-2 focus:ring-zinc-400"
-            onClick={onConfirm}
+            onClick={handleConfirm}
             disabled={loading}
           >
             Закрыть сессию

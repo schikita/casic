@@ -242,7 +242,7 @@ def get_day_summary(
     # Calculate totals
     total_chip_income_cash = 0  # Cash buyins (positive only)
     total_chip_cashout = 0  # Cash cashouts (absolute value, negative amounts)
-    total_chip_income_credit = 0  # Credit buyins (credit part of income)
+    total_chip_income_credit = 0  # Credit buyins (informational only, NOT in rake calculation)
     total_balance_adjustments_profit = 0  # Positive adjustments
     total_balance_adjustments_expense = 0  # Negative adjustments (absolute value)
 
@@ -250,7 +250,7 @@ def get_day_summary(
         amount = int(cast(int, p.amount))
         if amount > 0:  # Buyin
             if p.payment_type == "credit":
-                total_chip_income_credit += amount
+                total_chip_income_credit += amount  # Track for info only
             else:
                 total_chip_income_cash += amount
         elif amount < 0:  # Cashout (negative amount = expense)
@@ -313,27 +313,30 @@ def get_day_summary(
         for seat in seats:
             total_player_balance += int(cast(int, seat.total))
 
-    # Gross rake ("грязный") = table result BEFORE out-of-table expenses
-    # (salaries, negative balance adjustments). It includes credit as part of income.
-    gross_rake = (total_chip_income_cash + total_chip_income_credit) - total_chip_cashout - total_player_balance
+    # Gross rake ("грязный") = sum of manually entered rake from all dealer assignments
+    # The rake is entered by table admin when:
+    # 1) A dealer is removed from the table (shift ends mid-session)
+    # 2) Session is closed (for each active dealer at that moment)
+    gross_rake = 0
+    for s in sessions:
+        for assignment in s.dealer_assignments:
+            if assignment.rake is not None:
+                gross_rake += int(cast(int, assignment.rake))
 
     # Net result for the day = gross_rake - salaries + balance_adjustments_profit - balance_adjustments_expense
-    # Note: credit is NOT subtracted here; it's shown as a "credit part" inside gross_rake.
     net_result = gross_rake - total_salary + total_balance_adjustments_profit - total_balance_adjustments_expense
-    
+
     # DIAGNOSTIC LOGGING
     logger.info(f"--- CALCULATION COMPONENTS ---")
     logger.info(f"total_chip_income_cash (cash buyins): {total_chip_income_cash}")
     logger.info(f"total_chip_cashout (cashouts to players): {total_chip_cashout}")
     logger.info(f"total_player_balance (chips players have): {total_player_balance}")
     logger.info(f"total_salary: {total_salary}")
-    logger.info(f"total_chip_income_credit (credit buyins): {total_chip_income_credit}")
+    logger.info(f"total_chip_income_credit (credit buyins - info only): {total_chip_income_credit}")
     logger.info(f"total_balance_adjustments_profit: {total_balance_adjustments_profit}")
     logger.info(f"total_balance_adjustments_expense: {total_balance_adjustments_expense}")
     logger.info(f"--- FORMULAS ---")
-    logger.info(
-        f"gross_rake = ({total_chip_income_cash} + {total_chip_income_credit}) - {total_chip_cashout} - {total_player_balance} = {gross_rake}"
-    )
+    logger.info(f"gross_rake = sum of dealer assignment rakes = {gross_rake}")
     logger.info(
         f"net_result = {gross_rake} - {total_salary} + {total_balance_adjustments_profit} - {total_balance_adjustments_expense} = {net_result}"
     )
@@ -345,7 +348,8 @@ def get_day_summary(
         sid = cast(str, s.id)
         seats = seats_by_session.get(sid, [])
         session_balance = sum(int(cast(int, seat.total)) for seat in seats)
-        logger.info(f"  Session {sid} (Table {s.table_id}, {s.status}): player_balance = {session_balance}")
+        session_rake = sum(int(cast(int, a.rake)) for a in s.dealer_assignments if a.rake is not None)
+        logger.info(f"  Session {sid} (Table {s.table_id}, {s.status}): player_balance = {session_balance}, rake = {session_rake}")
     logger.info(f"=== END DIAGNOSTICS ===")
 
     open_sessions = len([s for s in sessions if s.status == "open"])
@@ -360,7 +364,6 @@ def get_day_summary(
         "working_day_end": end_time.isoformat(),
         "income": {
             "gross_rake": gross_rake,
-            "credit_part": total_chip_income_credit,
             "balance_adjustments": total_balance_adjustments_profit,
         },
         "expenses": {
@@ -370,7 +373,7 @@ def get_day_summary(
         "result": net_result,
         "info": {
             "buyin_cash": total_chip_income_cash,
-            "buyin_credit": total_chip_income_credit,
+            "buyin_credit": total_chip_income_credit,  # Informational only
             "cashout": total_chip_cashout,
             "player_balance": total_player_balance,
             "total_sessions": len(sessions),
@@ -575,6 +578,7 @@ def _calculate_session_dealer_earnings(
                 "hours": hours,
                 "hourly_rate": hourly_rate,
                 "salary": salary,
+                "rake": int(cast(int, assignment.rake)) if assignment.rake is not None else 0,
             })
     elif session.dealer_id:
         # Fallback to legacy method for sessions without dealer_assignments
@@ -591,6 +595,7 @@ def _calculate_session_dealer_earnings(
                 "hours": hours,
                 "hourly_rate": hourly_rate,
                 "salary": salary,
+                "rake": 0,  # Legacy sessions don't have per-dealer rake
             })
 
     return earnings
@@ -801,9 +806,9 @@ def _create_table_states_sheet(
         table_header_cell.font = Font(bold=True, size=14, color="FFFFFF")
         table_header_cell.fill = table_header_fill
         table_header_cell.border = thick_border
-        # Merge cells for table header to span across columns
-        ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=5)
-        for col in range(1, 6):
+        # Merge cells for table header to span across columns (6 columns now includes Rake)
+        ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=6)
+        for col in range(1, 7):
             ws.cell(row=row, column=col).fill = table_header_fill
             ws.cell(row=row, column=col).border = thick_border
         row += 1
@@ -894,26 +899,27 @@ def _create_table_states_sheet(
                 cell.fill = MONEY_NEGATIVE_FILL
             row += 1
 
-            # Staff earnings section
+            # Staff earnings section with rake
             dealer_earnings = _calculate_session_dealer_earnings(session, db)
             waiter_earnings = _calculate_session_waiter_earnings(session, db)
 
             if dealer_earnings or waiter_earnings:
                 row += 1  # Add spacing
-                ws.cell(row=row, column=1, value="Зарплаты персонала:")
+                ws.cell(row=row, column=1, value="Персонал сессии:")
                 ws.cell(row=row, column=1).font = Font(bold=True, italic=True)
                 row += 1
 
-                # Dealer earnings header
+                # Dealer earnings header (now with Rake column)
                 if dealer_earnings:
-                    staff_headers = ["Сотрудник", "Роль", "Часов", "Ставка/час", "Зарплата"]
+                    staff_headers = ["Сотрудник", "Роль", "Часов", "Ставка/час", "Зарплата", "Рейк"]
                     for col, h in enumerate(staff_headers, 1):
                         ws.cell(row=row, column=col, value=h)
                     _style_header(ws, row, len(staff_headers))
                     row += 1
 
-                    # Display each dealer's earnings
+                    # Display each dealer's earnings with rake
                     total_dealer_salary = 0
+                    total_dealer_rake = 0
                     for earning in dealer_earnings:
                         ws.cell(row=row, column=1, value=earning["dealer_name"])
                         ws.cell(row=row, column=2, value="Дилер")
@@ -922,6 +928,12 @@ def _create_table_states_sheet(
                         salary_cell = ws.cell(row=row, column=5, value=earning["salary"])
                         salary_cell.fill = MONEY_NEGATIVE_FILL  # Salary is an expense
                         total_dealer_salary += earning["salary"]
+                        # Rake column
+                        rake_value = earning.get("rake", 0) or 0
+                        rake_cell = ws.cell(row=row, column=6, value=rake_value)
+                        if rake_value > 0:
+                            rake_cell.fill = MONEY_POSITIVE_FILL
+                        total_dealer_rake += rake_value
                         row += 1
 
                     # Show total if multiple dealers
@@ -931,13 +943,17 @@ def _create_table_states_sheet(
                         total_cell = ws.cell(row=row, column=5, value=total_dealer_salary)
                         total_cell.font = Font(bold=True)
                         total_cell.fill = MONEY_NEGATIVE_FILL
+                        total_rake_cell = ws.cell(row=row, column=6, value=total_dealer_rake)
+                        total_rake_cell.font = Font(bold=True)
+                        if total_dealer_rake > 0:
+                            total_rake_cell.fill = MONEY_POSITIVE_FILL
                         row += 1
 
                 # Waiter earnings
                 if waiter_earnings:
                     # Add header if not already added
                     if not dealer_earnings:
-                        staff_headers = ["Сотрудник", "Роль", "Часов", "Ставка/час", "Зарплата"]
+                        staff_headers = ["Сотрудник", "Роль", "Часов", "Ставка/час", "Зарплата", "Рейк"]
                         for col, h in enumerate(staff_headers, 1):
                             ws.cell(row=row, column=col, value=h)
                         _style_header(ws, row, len(staff_headers))
@@ -949,6 +965,7 @@ def _create_table_states_sheet(
                     ws.cell(row=row, column=4, value=waiter_earnings["hourly_rate"])
                     salary_cell = ws.cell(row=row, column=5, value=waiter_earnings["salary"])
                     salary_cell.fill = MONEY_NEGATIVE_FILL  # Salary is an expense
+                    ws.cell(row=row, column=6, value="—")  # Waiters don't have rake
                     row += 1
 
             # Apply border around the entire session block
@@ -1169,13 +1186,13 @@ def _create_summary_sheet(
     # Calculate totals
     total_chip_income_cash = 0  # Cash buyins (positive only)
     total_chip_cashout = 0  # Cash cashouts (absolute value, negative amounts)
-    total_chip_income_credit = 0  # Credit buyins (credit part of income)
-    
+    total_chip_income_credit = 0  # Credit buyins (informational only, NOT in rake calculation)
+
     for p in purchases:
         amount = int(cast(int, p.amount))
         if amount > 0:  # Buyin
             if p.payment_type == "credit":
-                total_chip_income_credit += amount
+                total_chip_income_credit += amount  # Track for info only
             else:
                 total_chip_income_cash += amount
         elif amount < 0:  # Cashout (negative amount = expense)
@@ -1213,8 +1230,12 @@ def _create_summary_sheet(
         for seat in seats:
             total_player_balance += int(cast(int, seat.total))
 
-    # Gross rake ("грязный") = (cash buyins + credit buyins) - cashouts - players' ending balance
-    gross_rake = (total_chip_income_cash + total_chip_income_credit) - total_chip_cashout - total_player_balance
+    # Gross rake ("грязный") = sum of manually entered rake from dealer assignments
+    gross_rake = 0
+    for s in sessions:
+        for assignment in s.dealer_assignments:
+            if assignment.rake is not None:
+                gross_rake += int(cast(int, assignment.rake))
 
     # Net result = gross rake - salaries + balance adjustments (profit/expense)
     net_result = gross_rake - total_salary + total_balance_adjustments_profit - total_balance_adjustments_expense
@@ -1235,8 +1256,6 @@ def _create_summary_sheet(
     ws.cell(row=row, column=1, value="Рейк (грязный):")
     ws.cell(row=row, column=2, value=gross_rake)
     ws.cell(row=row, column=2).fill = MONEY_POSITIVE_FILL
-    credit_cell = ws.cell(row=row, column=3, value=f"(кредит {total_chip_income_credit})")
-    credit_cell.font = Font(color="FF0000", bold=True)
     row += 1
 
     ws.cell(row=row, column=1, value="Покупка фишек (наличные):")
@@ -1290,19 +1309,6 @@ def _create_summary_sheet(
 
     ws.cell(row=row, column=1, value="Баланс игроков (остаток фишек):")
     ws.cell(row=row, column=2, value=total_player_balance)
-    row += 1
-
-    ws.cell(row=row, column=1, value="Выдано в кредит:")
-    ws.cell(row=row, column=2, value=total_chip_income_credit)
-    ws.cell(row=row, column=2).fill = CREDIT_DARK_FILL
-    ws.cell(row=row, column=2).font = Font(color="FFFFFF", bold=True)
-    row += 1
-    
-    # Add cashout line
-    ws.cell(row=row, column=1, value="Выдано игрокам (кэшаут):")
-    ws.cell(row=row, column=2, value=total_chip_cashout)
-    ws.cell(row=row, column=2).fill = MONEY_NEGATIVE_FILL
-    ws.cell(row=row, column=2).font = Font(bold=True)
     row += 1
 
     ws.cell(row=row, column=1, value="Количество сессий:")

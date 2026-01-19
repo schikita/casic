@@ -21,6 +21,7 @@ export default function ReplaceDealerModal({
 }: Props) {
   const [dealers, setDealers] = useState<Staff[]>([]);
   const [selectedDealerId, setSelectedDealerId] = useState<number | null>(null);
+  const [outgoingDealerRake, setOutgoingDealerRake] = useState<string>("");
   const [loading, setLoading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -49,18 +50,27 @@ export default function ReplaceDealerModal({
   useEffect(() => {
     if (open) {
       loadDealers();
+      setOutgoingDealerRake("");
     }
   }, [open, loadDealers]);
 
   const handleSubmit = async () => {
     if (!selectedDealerId) return;
+    const rake = parseInt(outgoingDealerRake, 10);
+    if (isNaN(rake) || rake < 0) {
+      setError("Введите корректную сумму рейка");
+      return;
+    }
     setSubmitting(true);
     setError(null);
     try {
       const res = await apiFetch(`/api/sessions/${sessionId}/replace-dealer`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ new_dealer_id: selectedDealerId }),
+        body: JSON.stringify({
+          new_dealer_id: selectedDealerId,
+          outgoing_dealer_rake: rake,
+        }),
       });
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
@@ -93,6 +103,23 @@ export default function ReplaceDealerModal({
             {error}
           </div>
         )}
+
+        {/* Rake input for outgoing dealer */}
+        <div className="mb-4">
+          <label className="block text-sm text-zinc-600 mb-1">
+            Рейк уходящего дилера (₪)
+          </label>
+          <input
+            type="number"
+            inputMode="numeric"
+            min="0"
+            className="w-full rounded-xl border border-zinc-300 bg-white text-black px-3 py-3 text-base focus:outline-none focus:ring-2 focus:ring-zinc-400"
+            value={outgoingDealerRake}
+            onChange={(e) => setOutgoingDealerRake(e.target.value)}
+            placeholder="0"
+            disabled={submitting}
+          />
+        </div>
 
         {loading ? (
           <div className="text-zinc-500 text-sm mb-3">Загрузка доступных дилеров…</div>

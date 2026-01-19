@@ -488,6 +488,8 @@ def export_day(
 
     session_ids = [cast(str, s.id) for s in sessions]
     seats_by_session: dict[str, list[Seat]] = {}
+    # Track session status for determining how to calculate total
+    session_status: dict[str, str] = {cast(str, s.id): cast(str, s.status) for s in sessions}
 
     if session_ids:
         seats = (
@@ -499,6 +501,25 @@ def export_day(
         for seat in seats:
             sid = cast(str, seat.session_id)
             seats_by_session.setdefault(sid, []).append(seat)
+
+    # For closed sessions, get cashout amounts per seat
+    # Cashouts are recorded as negative ChipPurchase amounts at session close
+    cashouts_by_seat: dict[tuple[str, int], int] = {}
+    if session_ids:
+        # Get all negative chip purchases (cashouts) for these sessions
+        cashout_purchases = (
+            db.query(ChipPurchase)
+            .filter(
+                ChipPurchase.session_id.in_(session_ids),
+                ChipPurchase.amount < 0,
+            )
+            .all()
+        )
+        for cp in cashout_purchases:
+            key = (cast(str, cp.session_id), int(cast(int, cp.seat_no)))
+            # Sum up all cashouts for this seat (in case there are multiple)
+            # Store as positive number (absolute value)
+            cashouts_by_seat[key] = cashouts_by_seat.get(key, 0) + abs(int(cast(int, cp.amount)))
 
     table_name = cast(str, table.name)
 
@@ -522,6 +543,15 @@ def export_day(
             for seat in seats:
                 pn = cast(str, seat.player_name) if seat.player_name is not None else ""
                 pn = _sanitize_cell(pn)
+                seat_no = int(cast(int, seat.seat_no))
+
+                # For open sessions, use current seat.total
+                # For closed sessions, use the cashout amount (what they left with)
+                if s_status == "open":
+                    total = int(cast(int, seat.total))
+                else:
+                    # Closed session - use cashout amount
+                    total = cashouts_by_seat.get((sid, seat_no), 0)
 
                 w.writerow(
                     [
@@ -529,9 +559,9 @@ def export_day(
                         s.date.isoformat(),
                         sid,
                         s_status,
-                        str(int(cast(int, seat.seat_no))),
+                        str(seat_no),
                         pn,
-                        str(int(cast(int, seat.total))),
+                        str(total),
                     ]
                 )
                 yield buf.getvalue()

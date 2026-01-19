@@ -99,6 +99,7 @@ class SessionDealerAssignmentOut(BaseModel):
 class ReplaceDealerIn(BaseModel):
     """Input schema for replacing a dealer in a session."""
     new_dealer_id: int = Field(..., description="ID of the new dealer to assign")
+    outgoing_dealer_rake: int = Field(..., ge=0, description="Rake amount brought by the outgoing dealer during their shift")
 
 
 class AddDealerIn(BaseModel):
@@ -109,6 +110,7 @@ class AddDealerIn(BaseModel):
 class RemoveDealerIn(BaseModel):
     """Input schema for removing a dealer from a session."""
     assignment_id: int = Field(..., description="ID of the dealer assignment to end")
+    rake: int = Field(..., ge=0, description="Rake amount brought by this dealer during their shift")
 
 
 class SessionOut(BaseModel):
@@ -183,6 +185,17 @@ class CasinoBalanceAdjustmentOut(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class DealerRakeIn(BaseModel):
+    """Input schema for dealer rake amount when closing session."""
+    assignment_id: int = Field(..., description="ID of the dealer assignment")
+    rake: int = Field(..., ge=0, description="Rake amount brought by this dealer during their shift")
+
+
+class CloseSessionIn(BaseModel):
+    """Input schema for closing a session with dealer rake amounts."""
+    dealer_rakes: list[DealerRakeIn] = Field(..., description="Rake amounts for each active dealer")
 
 
 class ClosedSessionOut(BaseModel):

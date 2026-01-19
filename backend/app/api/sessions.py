@@ -15,6 +15,7 @@ from ..models.db import ChipOp, ChipPurchase, Seat, Session, SessionDealerAssign
 from ..models.schemas import (
     AddDealerIn,
     ChipCreateIn,
+    CloseSessionIn,
     RemoveDealerIn,
     ReplaceDealerIn,
     SeatAssignIn,
@@ -896,20 +897,21 @@ def _cashout_seat_chips(
     db.add(purchase)
 
 
-def _finalize_session(db: DBSession, session: Session) -> None:
+def _finalize_session(db: DBSession, session: Session, dealer_rakes: dict[int, int] | None = None) -> None:
     """
     Finalize session by setting status to closed and recording close time.
-    Also ends any active dealer assignments.
+    Also ends any active dealer assignments and saves their rake amounts.
 
     Args:
         db: Database session
         session: Session object
+        dealer_rakes: Dict mapping assignment_id to rake amount (optional)
     """
     now = utc_now()
     session.status = cast(Any, "closed")
     session.closed_at = cast(Any, now)
 
-    # End any active dealer assignments
+    # End any active dealer assignments and save their rake amounts
     active_assignments = (
         db.query(SessionDealerAssignment)
         .filter(
@@ -920,6 +922,8 @@ def _finalize_session(db: DBSession, session: Session) -> None:
     )
     for assignment in active_assignments:
         assignment.ended_at = cast(Any, now)
+        if dealer_rakes and int(cast(int, assignment.id)) in dealer_rakes:
+            assignment.rake = cast(Any, dealer_rakes[int(cast(int, assignment.id))])
 
 
 @router.post(
@@ -929,22 +933,23 @@ def _finalize_session(db: DBSession, session: Session) -> None:
 )
 def close_session(
     session_id: str,
+    payload: CloseSessionIn,
     db: DBSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
     logger.info(f"Attempting to close session {session_id} by user {user.username}")
-    
+
     try:
         # Validate session and user access
         logger.info(f"Validating session {session_id}")
         s = _validate_and_get_session(db, session_id, user)
         logger.info(f"Session validated: status={s.status}, table_id={s.table_id}")
-        
+
         # Get all seats for this session
         logger.info(f"Getting seats for session {session_id}")
         seats = _get_session_seats(db, session_id)
         logger.info(f"Found {len(seats)} seats")
-        
+
         # Cash out all player chips
         # NOTE: We do NOT auto-close credit when closing a session.
         # Credit must be manually closed via the /api/admin/close-credit endpoint.
@@ -958,10 +963,13 @@ def close_session(
 
                 # Set seat total to 0 after cashing out
                 seat.total = cast(Any, 0)
-        
-        # Finalize session
-        logger.info(f"Finalizing session {session_id}")
-        _finalize_session(db, s)
+
+        # Build dealer rakes dict from payload
+        dealer_rakes = {dr.assignment_id: dr.rake for dr in payload.dealer_rakes}
+
+        # Finalize session with dealer rake amounts
+        logger.info(f"Finalizing session {session_id} with dealer rakes: {dealer_rakes}")
+        _finalize_session(db, s, dealer_rakes)
 
         logger.info(f"Committing transaction for session {session_id}")
         db.commit()
@@ -1037,7 +1045,7 @@ def replace_dealer(
 
     now = utc_now()
 
-    # End current dealer assignment (if any)
+    # End current dealer assignment (if any) and save rake for outgoing dealer
     current_assignment = (
         db.query(SessionDealerAssignment)
         .filter(
@@ -1048,6 +1056,7 @@ def replace_dealer(
     )
     if current_assignment:
         current_assignment.ended_at = cast(Any, now)
+        current_assignment.rake = cast(Any, payload.outgoing_dealer_rake)
 
     # Create new dealer assignment
     new_assignment = SessionDealerAssignment(
@@ -1255,8 +1264,9 @@ def remove_dealer(
 
     now = utc_now()
 
-    # End the dealer assignment
+    # End the dealer assignment and save the rake amount
     assignment.ended_at = cast(Any, now)
+    assignment.rake = cast(Any, payload.rake)
 
     # If this was the primary dealer (session.dealer_id), update to another active dealer
     if s.dealer_id == assignment.dealer_id:
