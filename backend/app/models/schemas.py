@@ -87,6 +87,7 @@ class SessionDealerAssignmentOut(BaseModel):
     id: int
     dealer_id: int
     dealer_username: str
+    dealer_hourly_rate: int | None = None  # Hourly rate for earnings calculation
     started_at: dt.datetime
     ended_at: dt.datetime | None = None
     rake: int | None = None  # Rake attributed to this dealer during their shift
@@ -98,6 +99,16 @@ class SessionDealerAssignmentOut(BaseModel):
 class ReplaceDealerIn(BaseModel):
     """Input schema for replacing a dealer in a session."""
     new_dealer_id: int = Field(..., description="ID of the new dealer to assign")
+
+
+class AddDealerIn(BaseModel):
+    """Input schema for adding a dealer to a session (concurrent dealers)."""
+    dealer_id: int = Field(..., description="ID of the dealer to add")
+
+
+class RemoveDealerIn(BaseModel):
+    """Input schema for removing a dealer from a session."""
+    assignment_id: int = Field(..., description="ID of the dealer assignment to end")
 
 
 class SessionOut(BaseModel):

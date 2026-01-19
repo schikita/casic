@@ -24,12 +24,12 @@ export default function LoginPage() {
       const role: UserRole = u.role;
 
       if (role === "superadmin") {
-        router.replace("/admin");
+        router.replace("/admin/summary");
         return;
       }
 
       if (role === "table_admin") {
-        router.replace("/admin/export");
+        router.replace("/");
         return;
       }
 

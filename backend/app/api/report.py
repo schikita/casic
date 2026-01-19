@@ -811,7 +811,21 @@ def _create_table_states_sheet(
                 end_time = "закрыта"
             else:
                 end_time = "открыта"
-            dealer_name = session.dealer.username if session.dealer else "—"
+
+            # Show all dealers if there are multiple concurrent dealers
+            if session.dealer_assignments and len(session.dealer_assignments) > 0:
+                active_dealers = [a for a in session.dealer_assignments if not a.ended_at]
+                if len(active_dealers) > 1:
+                    dealer_names = ", ".join([a.dealer.username if a.dealer else "—" for a in active_dealers])
+                    dealer_name = f"{dealer_names} (несколько)"
+                elif len(active_dealers) == 1:
+                    dealer_name = active_dealers[0].dealer.username if active_dealers[0].dealer else "—"
+                else:
+                    # All dealers ended, show the last one
+                    dealer_name = session.dealer.username if session.dealer else "—"
+            else:
+                dealer_name = session.dealer.username if session.dealer else "—"
+
             waiter_name = session.waiter.username if session.waiter else "—"
             status_text = "закрыта" if session.status == "closed" else "открыта"
             chips_in_play = int(cast(int, session.chips_in_play))

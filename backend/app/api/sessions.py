@@ -13,7 +13,9 @@ from ..core.datetime_utils import utc_now
 from ..core.deps import get_current_user, get_db, require_roles
 from ..models.db import ChipOp, ChipPurchase, Seat, Session, SessionDealerAssignment, Table, User
 from ..models.schemas import (
+    AddDealerIn,
     ChipCreateIn,
+    RemoveDealerIn,
     ReplaceDealerIn,
     SeatAssignIn,
     SeatOut,
@@ -117,11 +119,16 @@ def _build_session_out(session: Session) -> SessionOut:
     dealer_assignments_out = []
     if session.dealer_assignments:
         for assignment in session.dealer_assignments:
+            dealer_hourly_rate = None
+            if assignment.dealer:
+                dealer_hourly_rate = int(cast(int, assignment.dealer.hourly_rate)) if assignment.dealer.hourly_rate else None
+
             dealer_assignments_out.append(
                 SessionDealerAssignmentOut(
                     id=int(cast(int, assignment.id)),
                     dealer_id=int(cast(int, assignment.dealer_id)),
                     dealer_username=cast(str, assignment.dealer.username) if assignment.dealer else "Unknown",
+                    dealer_hourly_rate=dealer_hourly_rate,
                     started_at=cast(dt.datetime, assignment.started_at),
                     ended_at=cast(dt.datetime, assignment.ended_at) if assignment.ended_at else None,
                 )
@@ -149,31 +156,72 @@ def _build_session_out(session: Session) -> SessionOut:
     dependencies=[Depends(require_roles("superadmin", "table_admin"))],
 )
 def get_available_dealers(
+    session_id: str | None = Query(default=None),
     db: DBSession = Depends(get_db),
 ):
     """
     Returns dealers not currently assigned to any active (open) session.
-    Ensures exclusive assignment: one dealer can only be assigned to one session at a time.
+    If session_id is provided, returns dealers available to ADD to that specific session
+    (excludes dealers already in that session, but allows dealers not in any session).
     """
-    # Get IDs of dealers currently assigned to open sessions
-    assigned_dealer_ids = (
-        db.query(Session.dealer_id)
-        .filter(Session.status == "open", Session.dealer_id.isnot(None))
-        .all()
-    )
-    assigned_ids = {row[0] for row in assigned_dealer_ids if row[0] is not None}
-
-    # Get all active dealers not in the assigned list
-    dealers = (
-        db.query(User)
-        .filter(
-            User.role == "dealer",
-            User.is_active == True,
-            User.id.notin_(assigned_ids) if assigned_ids else True,
+    if session_id:
+        # Get dealers already actively assigned to this specific session
+        dealers_in_session = (
+            db.query(SessionDealerAssignment.dealer_id)
+            .filter(
+                SessionDealerAssignment.session_id == session_id,
+                SessionDealerAssignment.ended_at.is_(None),
+            )
+            .all()
         )
-        .order_by(User.username.asc())
-        .all()
-    )
+        dealers_in_session_ids = {row[0] for row in dealers_in_session if row[0] is not None}
+
+        # Get dealers actively assigned to OTHER open sessions
+        dealers_in_other_sessions = (
+            db.query(SessionDealerAssignment.dealer_id)
+            .join(Session, SessionDealerAssignment.session_id == Session.id)
+            .filter(
+                Session.status == "open",
+                SessionDealerAssignment.ended_at.is_(None),
+                Session.id != session_id,
+            )
+            .all()
+        )
+        dealers_in_other_sessions_ids = {row[0] for row in dealers_in_other_sessions if row[0] is not None}
+
+        # Exclude dealers in this session OR in other sessions
+        excluded_ids = dealers_in_session_ids | dealers_in_other_sessions_ids
+
+        dealers = (
+            db.query(User)
+            .filter(
+                User.role == "dealer",
+                User.is_active == True,
+                User.id.notin_(excluded_ids) if excluded_ids else True,
+            )
+            .order_by(User.username.asc())
+            .all()
+        )
+    else:
+        # Original behavior: Get IDs of dealers currently assigned to open sessions
+        assigned_dealer_ids = (
+            db.query(Session.dealer_id)
+            .filter(Session.status == "open", Session.dealer_id.isnot(None))
+            .all()
+        )
+        assigned_ids = {row[0] for row in assigned_dealer_ids if row[0] is not None}
+
+        # Get all active dealers not in the assigned list
+        dealers = (
+            db.query(User)
+            .filter(
+                User.role == "dealer",
+                User.is_active == True,
+                User.id.notin_(assigned_ids) if assigned_ids else True,
+            )
+            .order_by(User.username.asc())
+            .all()
+        )
     return [StaffOut.model_validate(d) for d in dealers]
 
 
@@ -875,5 +923,211 @@ def replace_dealer(
     logger.info(f"Dealer replaced in session {session_id}: new dealer {new_dealer.username}")
     return _build_session_out(s)
 
+
+@router.post(
+    "/{session_id}/add-dealer",
+    response_model=SessionOut,
+    dependencies=[Depends(require_roles("superadmin", "table_admin"))],
+)
+def add_dealer(
+    session_id: str,
+    payload: AddDealerIn,
+    db: DBSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """
+    Add a dealer to an open session to work concurrently with existing dealer(s).
+    Only table_admin and superadmin can perform this action.
+    This does NOT end any existing dealer assignments - multiple dealers can work simultaneously.
+    """
+    # Get the session with eager loading
+    s = (
+        db.query(Session)
+        .options(
+            joinedload(Session.dealer),
+            joinedload(Session.waiter),
+            joinedload(Session.dealer_assignments).joinedload(SessionDealerAssignment.dealer),
+        )
+        .filter(Session.id == session_id)
+        .first()
+    )
+    if not s:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    if s.status != "open":
+        raise HTTPException(status_code=400, detail="Can only add dealer to open sessions")
+
+    _require_session_access(user, s)
+
+    # Validate dealer exists and is active
+    new_dealer = db.query(User).filter(
+        User.id == payload.dealer_id,
+        User.role == "dealer",
+        User.is_active == True,
+    ).first()
+    if not new_dealer:
+        raise HTTPException(status_code=400, detail="Invalid dealer selected")
+
+    # Check if dealer is already actively assigned to this session
+    existing_assignment = (
+        db.query(SessionDealerAssignment)
+        .filter(
+            SessionDealerAssignment.session_id == session_id,
+            SessionDealerAssignment.dealer_id == payload.dealer_id,
+            SessionDealerAssignment.ended_at.is_(None),
+        )
+        .first()
+    )
+    if existing_assignment:
+        raise HTTPException(
+            status_code=400,
+            detail="Dealer is already assigned to this session"
+        )
+
+    # Check dealer is not assigned to another open session
+    dealer_assigned = (
+        db.query(SessionDealerAssignment)
+        .join(Session, SessionDealerAssignment.session_id == Session.id)
+        .filter(
+            Session.status == "open",
+            SessionDealerAssignment.dealer_id == payload.dealer_id,
+            SessionDealerAssignment.ended_at.is_(None),
+            Session.id != session_id,
+        )
+        .first()
+    )
+    if dealer_assigned:
+        raise HTTPException(
+            status_code=400,
+            detail="Dealer is already assigned to another active session"
+        )
+
+    now = utc_now()
+
+    # Create new dealer assignment (concurrent with existing ones)
+    new_assignment = SessionDealerAssignment(
+        session_id=cast(Any, session_id),
+        dealer_id=cast(Any, payload.dealer_id),
+        started_at=now,
+        ended_at=None,
+    )
+    db.add(new_assignment)
+
+    db.commit()
+
+    # Reload session with all relationships
+    s = (
+        db.query(Session)
+        .options(
+            joinedload(Session.dealer),
+            joinedload(Session.waiter),
+            joinedload(Session.dealer_assignments).joinedload(SessionDealerAssignment.dealer),
+        )
+        .filter(Session.id == session_id)
+        .first()
+    )
+
+    logger.info(f"Dealer added to session {session_id}: {new_dealer.username}")
+    return _build_session_out(s)
+
+
+@router.post(
+    "/{session_id}/remove-dealer",
+    response_model=SessionOut,
+    dependencies=[Depends(require_roles("superadmin", "table_admin"))],
+)
+def remove_dealer(
+    session_id: str,
+    payload: RemoveDealerIn,
+    db: DBSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """
+    End a specific dealer's assignment in an open session.
+    Only table_admin and superadmin can perform this action.
+    This is used when multiple dealers are working concurrently and one needs to be removed.
+    """
+    # Get the session with eager loading
+    s = (
+        db.query(Session)
+        .options(
+            joinedload(Session.dealer),
+            joinedload(Session.waiter),
+            joinedload(Session.dealer_assignments).joinedload(SessionDealerAssignment.dealer),
+        )
+        .filter(Session.id == session_id)
+        .first()
+    )
+    if not s:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    if s.status != "open":
+        raise HTTPException(status_code=400, detail="Can only remove dealer from open sessions")
+
+    _require_session_access(user, s)
+
+    # Find the dealer assignment
+    assignment = (
+        db.query(SessionDealerAssignment)
+        .filter(
+            SessionDealerAssignment.id == payload.assignment_id,
+            SessionDealerAssignment.session_id == session_id,
+        )
+        .first()
+    )
+    if not assignment:
+        raise HTTPException(status_code=404, detail="Dealer assignment not found")
+
+    if assignment.ended_at is not None:
+        raise HTTPException(status_code=400, detail="Dealer assignment already ended")
+
+    # Get all active assignments for this session
+    active_assignments = (
+        db.query(SessionDealerAssignment)
+        .filter(
+            SessionDealerAssignment.session_id == session_id,
+            SessionDealerAssignment.ended_at.is_(None),
+        )
+        .all()
+    )
+
+    # Prevent removing the last dealer
+    if len(active_assignments) <= 1:
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot remove the last dealer from a session. Close the session instead."
+        )
+
+    now = utc_now()
+
+    # End the dealer assignment
+    assignment.ended_at = cast(Any, now)
+
+    # If this was the primary dealer (session.dealer_id), update to another active dealer
+    if s.dealer_id == assignment.dealer_id:
+        # Find another active dealer to set as primary
+        other_assignment = next(
+            (a for a in active_assignments if a.id != assignment.id),
+            None
+        )
+        if other_assignment:
+            s.dealer_id = cast(Any, other_assignment.dealer_id)
+
+    db.commit()
+
+    # Reload session with all relationships
+    s = (
+        db.query(Session)
+        .options(
+            joinedload(Session.dealer),
+            joinedload(Session.waiter),
+            joinedload(Session.dealer_assignments).joinedload(SessionDealerAssignment.dealer),
+        )
+        .filter(Session.id == session_id)
+        .first()
+    )
+
+    logger.info(f"Dealer assignment {payload.assignment_id} ended in session {session_id}")
+    return _build_session_out(s)
 
 

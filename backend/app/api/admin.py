@@ -716,11 +716,16 @@ def list_closed_sessions(
                             if assignment_start <= op_time <= assignment_end:
                                 dealer_rake += abs(amount)
 
+                dealer_hourly_rate = None
+                if assignment.dealer:
+                    dealer_hourly_rate = int(cast(int, assignment.dealer.hourly_rate)) if assignment.dealer.hourly_rate else None
+
                 dealer_assignments_out.append(
                     SessionDealerAssignmentOut(
                         id=int(cast(int, assignment.id)),
                         dealer_id=int(cast(int, assignment.dealer_id)),
                         dealer_username=cast(str, assignment.dealer.username) if assignment.dealer else "Unknown",
+                        dealer_hourly_rate=dealer_hourly_rate,
                         started_at=cast(dt.datetime, assignment.started_at),
                         ended_at=cast(dt.datetime, assignment.ended_at) if assignment.ended_at else None,
                         rake=dealer_rake,

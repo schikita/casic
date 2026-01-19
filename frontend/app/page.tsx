@@ -7,6 +7,7 @@ import StartSessionModal from "@/components/StartSessionModal";
 import CashConfirmationModal from "@/components/CashConfirmationModal";
 import SessionCloseConfirmationModal from "@/components/SessionCloseConfirmationModal";
 import ReplaceDealerModal from "@/components/ReplaceDealerModal";
+import AddDealerModal from "@/components/AddDealerModal";
 import TopMenu from "@/components/TopMenu";
 import { RequireAuth } from "@/components/auth/RequireAuth";
 import { useAuth } from "@/components/auth/AuthContext";
@@ -42,6 +43,7 @@ export default function HomePage() {
   const [creditAmount, setCreditAmount] = useState<number>(0);
   const [creditByPlayer, setCreditByPlayer] = useState<Array<{ seat_no: number; player_name: string | null; amount: number }>>([]);
   const [showReplaceDealerModal, setShowReplaceDealerModal] = useState<boolean>(false);
+  const [showAddDealerModal, setShowAddDealerModal] = useState<boolean>(false);
   const [showDealerHistory, setShowDealerHistory] = useState<boolean>(false);
   const [rake, setRake] = useState<{ total_rake: number; total_buyins: number; total_cashouts: number; total_credit: number } | null>(null);
 
@@ -271,6 +273,33 @@ export default function HomePage() {
     }
   }, [session]);
 
+  const handleRemoveDealer = useCallback(async (assignmentId: number) => {
+    if (!session || !tableId) return;
+
+    // Confirm with user
+    if (!confirm("Вы уверены, что хотите завершить смену этого дилера?")) {
+      return;
+    }
+
+    setError(null);
+    setBusy(true);
+    try {
+      await apiJson<Session>(
+        "/api/sessions/" + session.id + "/remove-dealer",
+        {
+          method: "POST",
+          body: JSON.stringify({ assignment_id: assignmentId }),
+        }
+      );
+      // Reload session to get updated dealer assignments
+      loadOpenSession(tableId);
+    } catch (e) {
+      setError(getErrorMessage(e) || "Ошибка");
+    } finally {
+      setBusy(false);
+    }
+  }, [session, tableId, loadOpenSession]);
+
   useEffect(() => {
     if (!user) return;
     loadTablesAndSelect();
@@ -442,36 +471,80 @@ export default function HomePage() {
             </div>
 
             <div className="mb-3 rounded-xl bg-zinc-100 p-4 border border-zinc-200">
-              <div className="grid grid-cols-2 gap-3 mb-3">
-                <div>
-                  <div className="text-xs font-medium text-zinc-600 mb-1">
-                    Дилер
-                  </div>
-                  <div className="text-sm font-semibold text-zinc-900">
-                    {session.dealer?.username || "—"}
-                  </div>
-                  {session.dealer && session.dealer.hourly_rate && (
-                    <div className="text-xs text-zinc-500 mt-1">
-                      Заработано: <span className="font-semibold text-green-600">{formatMoney(dealerEarnings)}</span>
-                    </div>
-                  )}
+              {/* Active Dealers Section */}
+              <div className="mb-3">
+                <div className="text-xs font-medium text-zinc-600 mb-2">
+                  Активные дилеры
                 </div>
-                {session.waiter && (
-                  <div>
-                    <div className="text-xs font-medium text-zinc-600 mb-1">
-                      Официант
-                    </div>
+                {session.dealer_assignments && session.dealer_assignments.filter(a => !a.ended_at).length > 0 ? (
+                  <div className="space-y-2">
+                    {(() => {
+                      const activeDealers = session.dealer_assignments.filter(assignment => !assignment.ended_at);
+                      const hasMultipleDealers = activeDealers.length > 1;
+
+                      return activeDealers.map((assignment) => {
+                        // Calculate earnings for this specific dealer using their hourly rate
+                        const earnings = assignment.dealer_hourly_rate
+                          ? calculateEarnings(assignment.dealer_hourly_rate, assignment.started_at, null)
+                          : 0;
+
+                        return (
+                          <div key={assignment.id} className="rounded-lg bg-white p-2 border border-zinc-200">
+                            <div className="flex items-start justify-between">
+                              <div className="flex-1">
+                                <div className="text-sm font-semibold text-zinc-900">
+                                  {assignment.dealer_username}
+                                </div>
+                                <div className="text-xs text-zinc-500">
+                                  Начал: {formatTime(assignment.started_at)}
+                                </div>
+                                {assignment.dealer_hourly_rate && earnings > 0 && (
+                                  <div className="text-xs text-zinc-500 mt-1">
+                                    Заработано: <span className="font-semibold text-green-600">{formatMoney(earnings)}</span>
+                                  </div>
+                                )}
+                              </div>
+                              {(user?.role === "superadmin" || user?.role === "table_admin") && hasMultipleDealers && (
+                                <button
+                                  className="ml-2 rounded-lg bg-red-600 text-white px-3 py-1 text-xs active:bg-red-700 disabled:opacity-50"
+                                  onClick={() => handleRemoveDealer(assignment.id)}
+                                  disabled={busy}
+                                >
+                                  Завершить
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      });
+                    })()}
+                  </div>
+                ) : (
+                  <div className="text-sm text-zinc-500">Нет активных дилеров</div>
+                )}
+              </div>
+
+              {/* Waiter Section */}
+              {session.waiter && (
+                <div className="mb-3">
+                  <div className="text-xs font-medium text-zinc-600 mb-2">
+                    Официант
+                  </div>
+                  <div className="rounded-lg bg-white p-2 border border-zinc-200">
                     <div className="text-sm font-semibold text-zinc-900">
                       {session.waiter.username}
                     </div>
-                    {session.waiter.hourly_rate && (
+                    <div className="text-xs text-zinc-500">
+                      Начал: {formatTime(session.created_at)}
+                    </div>
+                    {session.waiter.hourly_rate && waiterEarnings > 0 && (
                       <div className="text-xs text-zinc-500 mt-1">
                         Заработано: <span className="font-semibold text-green-600">{formatMoney(waiterEarnings)}</span>
                       </div>
                     )}
                   </div>
-                )}
-              </div>
+                </div>
+              )}
 
               {/* Dealer history toggle */}
               {session.dealer_assignments && session.dealer_assignments.length > 1 && (
@@ -501,15 +574,25 @@ export default function HomePage() {
                 </div>
               )}
 
-              {/* Replace dealer button for table_admin and superadmin */}
+              {/* Dealer management buttons for table_admin and superadmin */}
               {(user?.role === "superadmin" || user?.role === "table_admin") && (
-                <button
-                  className="w-full rounded-xl bg-blue-600 text-white py-2 text-sm active:bg-blue-700 disabled:opacity-50"
-                  onClick={() => setShowReplaceDealerModal(true)}
-                  disabled={busy}
-                >
-                  Заменить дилера
-                </button>
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    className="rounded-xl bg-green-600 text-white py-2 text-sm active:bg-green-700 disabled:opacity-50"
+                    onClick={() => setShowAddDealerModal(true)}
+                    disabled={busy}
+                  >
+                    Добавить дилера
+                  </button>
+                  <button
+                    className="rounded-xl bg-blue-600 text-white py-2 text-sm active:bg-blue-700 disabled:opacity-50"
+                    onClick={() => setShowReplaceDealerModal(true)}
+                    disabled={busy || (session.dealer_assignments && session.dealer_assignments.filter(a => !a.ended_at).length > 1)}
+                    title={session.dealer_assignments && session.dealer_assignments.filter(a => !a.ended_at).length > 1 ? "Невозможно заменить дилера при наличии нескольких активных дилеров" : ""}
+                  >
+                    Заменить дилера
+                  </button>
+                </div>
               )}
             </div>
 
@@ -573,6 +656,13 @@ export default function HomePage() {
               currentDealerId={session.dealer_id}
               onClose={() => setShowReplaceDealerModal(false)}
               onDealerReplaced={() => tableId && loadOpenSession(tableId)}
+            />
+
+            <AddDealerModal
+              open={showAddDealerModal}
+              sessionId={session.id}
+              onClose={() => setShowAddDealerModal(false)}
+              onDealerAdded={() => tableId && loadOpenSession(tableId)}
             />
 
             {busy && (

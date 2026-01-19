@@ -7,17 +7,15 @@ import type { Staff } from "@/lib/types";
 type Props = {
   open: boolean;
   sessionId: string;
-  currentDealerId: number | null;
   onClose: () => void;
-  onDealerReplaced: () => void;
+  onDealerAdded: () => void;
 };
 
-export default function ReplaceDealerModal({
+export default function AddDealerModal({
   open,
   sessionId,
-  currentDealerId,
   onClose,
-  onDealerReplaced,
+  onDealerAdded,
 }: Props) {
   const [dealers, setDealers] = useState<Staff[]>([]);
   const [selectedDealerId, setSelectedDealerId] = useState<number | null>(null);
@@ -57,16 +55,16 @@ export default function ReplaceDealerModal({
     setSubmitting(true);
     setError(null);
     try {
-      const res = await apiFetch(`/api/sessions/${sessionId}/replace-dealer`, {
+      const res = await apiFetch(`/api/sessions/${sessionId}/add-dealer`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ new_dealer_id: selectedDealerId }),
+        body: JSON.stringify({ dealer_id: selectedDealerId }),
       });
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
-        throw new Error(err.detail || "Ошибка замены дилера");
+        throw new Error(err.detail || "Ошибка добавления дилера");
       }
-      onDealerReplaced();
+      onDealerAdded();
       onClose();
     } catch (e: unknown) {
       setError((e as Error)?.message ?? "Ошибка");
@@ -79,17 +77,30 @@ export default function ReplaceDealerModal({
 
   return (
     <div
-      className="fixed inset-0 z-50 bg-black/40 flex items-end"
-      onClick={onClose}
+      className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center"
+      onClick={(e) => {
+        if (e.target === e.currentTarget && !submitting) {
+          onClose();
+        }
+      }}
     >
       <div
-        className="bg-white w-full rounded-t-2xl p-4 pb-6 shadow-xl"
+        className="bg-white w-full max-w-md rounded-2xl p-5 shadow-xl mx-4"
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="text-lg font-bold text-black mb-3">Заменить дилера</div>
+        <div className="flex items-center justify-between mb-4">
+          <div className="text-lg font-bold text-black">Добавить дилера</div>
+          <button
+            className="text-zinc-600 px-3 py-2 disabled:opacity-50"
+            onClick={onClose}
+            disabled={submitting}
+          >
+            ✕
+          </button>
+        </div>
 
         {error && (
-          <div className="mb-3 rounded-xl bg-red-100 text-red-700 px-3 py-2 text-sm">
+          <div className="mb-3 rounded-xl bg-red-50 text-red-700 px-3 py-2 text-sm">
             {error}
           </div>
         )}
@@ -97,10 +108,10 @@ export default function ReplaceDealerModal({
         {loading ? (
           <div className="text-zinc-500 text-sm mb-3">Загрузка доступных дилеров…</div>
         ) : dealers.length === 0 ? (
-          <div className="text-zinc-500 text-sm mb-3">Нет доступных дилеров для замены</div>
+          <div className="text-zinc-500 text-sm mb-3">Нет доступных дилеров для добавления</div>
         ) : (
           <div className="mb-4">
-            <label className="block text-sm text-zinc-600 mb-1">Выберите нового дилера</label>
+            <label className="block text-sm text-zinc-600 mb-1">Выберите дилера</label>
             <select
               className="w-full rounded-xl border border-zinc-300 bg-white text-black px-3 py-3 text-base focus:outline-none focus:ring-2 focus:ring-zinc-400"
               value={selectedDealerId ?? ""}
@@ -125,11 +136,11 @@ export default function ReplaceDealerModal({
             Отмена
           </button>
           <button
-            className="rounded-xl bg-blue-600 text-white px-4 py-3 active:bg-blue-700 disabled:opacity-50"
+            className="rounded-xl bg-green-600 text-white px-4 py-3 active:bg-green-700 disabled:opacity-50"
             onClick={handleSubmit}
             disabled={submitting || loading || dealers.length === 0}
           >
-            {submitting ? "Замена…" : "Заменить"}
+            {submitting ? "Добавление…" : "Добавить"}
           </button>
         </div>
       </div>

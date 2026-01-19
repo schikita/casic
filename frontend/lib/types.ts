@@ -26,6 +26,7 @@ export type SessionDealerAssignment = {
   id: number;
   dealer_id: number;
   dealer_username: string;
+  dealer_hourly_rate: number | null;
   started_at: string;
   ended_at: string | null;
   rake: number | null;

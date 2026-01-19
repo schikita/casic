@@ -158,7 +158,7 @@ export function calculateHoursWorked(
  * @param hourlyRate - Hourly rate in chips (can be null)
  * @param startTime - Start time as ISO string
  * @param endTime - End time as ISO string (optional, defaults to now)
- * @returns Earnings in chips (rounded to nearest integer)
+ * @returns Earnings in chips (floored to avoid showing partial earnings)
  */
 export function calculateEarnings(
   hourlyRate: number | null | undefined,
@@ -170,5 +170,5 @@ export function calculateEarnings(
   }
 
   const hours = calculateHoursWorked(startTime, endTime);
-  return Math.round(hours * hourlyRate);
+  return Math.floor(hours * hourlyRate);
 }
