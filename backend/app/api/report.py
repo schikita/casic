@@ -242,7 +242,7 @@ def get_day_summary(
     # Calculate totals
     total_chip_income_cash = 0  # Cash buyins (positive only)
     total_chip_cashout = 0  # Cash cashouts (absolute value, negative amounts)
-    total_chip_income_credit = 0  # Credit buyins (expenses)
+    total_chip_income_credit = 0  # Credit buyins (credit part of income)
     total_balance_adjustments_profit = 0  # Positive adjustments
     total_balance_adjustments_expense = 0  # Negative adjustments (absolute value)
 
@@ -313,9 +313,13 @@ def get_day_summary(
         for seat in seats:
             total_player_balance += int(cast(int, seat.total))
 
-    # Casino result
-    # For table_admin: exclude salaries and balance adjustments
-    casino_result = total_chip_income_cash - total_chip_cashout - total_player_balance - total_salary - total_chip_income_credit + total_balance_adjustments_profit - total_balance_adjustments_expense
+    # Gross rake ("грязный") = table result BEFORE out-of-table expenses
+    # (salaries, negative balance adjustments). It includes credit as part of income.
+    gross_rake = (total_chip_income_cash + total_chip_income_credit) - total_chip_cashout - total_player_balance
+
+    # Net result for the day = gross_rake - salaries + balance_adjustments_profit - balance_adjustments_expense
+    # Note: credit is NOT subtracted here; it's shown as a "credit part" inside gross_rake.
+    net_result = gross_rake - total_salary + total_balance_adjustments_profit - total_balance_adjustments_expense
     
     # DIAGNOSTIC LOGGING
     logger.info(f"--- CALCULATION COMPONENTS ---")
@@ -326,9 +330,13 @@ def get_day_summary(
     logger.info(f"total_chip_income_credit (credit buyins): {total_chip_income_credit}")
     logger.info(f"total_balance_adjustments_profit: {total_balance_adjustments_profit}")
     logger.info(f"total_balance_adjustments_expense: {total_balance_adjustments_expense}")
-    logger.info(f"--- FORMULA ---")
-    logger.info(f"casino_result = {total_chip_income_cash} - {total_chip_cashout} - {total_player_balance} - {total_salary} - {total_chip_income_credit} + {total_balance_adjustments_profit} - {total_balance_adjustments_expense}")
-    logger.info(f"casino_result = {casino_result}")
+    logger.info(f"--- FORMULAS ---")
+    logger.info(
+        f"gross_rake = ({total_chip_income_cash} + {total_chip_income_credit}) - {total_chip_cashout} - {total_player_balance} = {gross_rake}"
+    )
+    logger.info(
+        f"net_result = {gross_rake} - {total_salary} + {total_balance_adjustments_profit} - {total_balance_adjustments_expense} = {net_result}"
+    )
     logger.info(f"--- BALANCE ADJUSTMENTS DETAIL ---")
     for adj in balance_adjustments_list:
         logger.info(f"  ID {adj['id']}: {adj['comment']} = {adj['amount']} ₪ (by {adj['created_by_username']})")
@@ -351,17 +359,19 @@ def get_day_summary(
         "working_day_start": start_time.isoformat(),
         "working_day_end": end_time.isoformat(),
         "income": {
-            "buyin_cash": total_chip_income_cash,
+            "gross_rake": gross_rake,
+            "credit_part": total_chip_income_credit,
             "balance_adjustments": total_balance_adjustments_profit,
         },
         "expenses": {
             "salaries": total_salary,
-            "buyin_credit": total_chip_income_credit,
-            "cashout": total_chip_cashout,
             "balance_adjustments": total_balance_adjustments_expense,
         },
-        "result": casino_result,
+        "result": net_result,
         "info": {
+            "buyin_cash": total_chip_income_cash,
+            "buyin_credit": total_chip_income_credit,
+            "cashout": total_chip_cashout,
             "player_balance": total_player_balance,
             "total_sessions": len(sessions),
             "open_sessions": open_sessions,
@@ -1159,7 +1169,7 @@ def _create_summary_sheet(
     # Calculate totals
     total_chip_income_cash = 0  # Cash buyins (positive only)
     total_chip_cashout = 0  # Cash cashouts (absolute value, negative amounts)
-    total_chip_income_credit = 0  # Credit buyins (expenses)
+    total_chip_income_credit = 0  # Credit buyins (credit part of income)
     
     for p in purchases:
         amount = int(cast(int, p.amount))
@@ -1203,6 +1213,12 @@ def _create_summary_sheet(
         for seat in seats:
             total_player_balance += int(cast(int, seat.total))
 
+    # Gross rake ("грязный") = (cash buyins + credit buyins) - cashouts - players' ending balance
+    gross_rake = (total_chip_income_cash + total_chip_income_credit) - total_chip_cashout - total_player_balance
+
+    # Net result = gross rake - salaries + balance adjustments (profit/expense)
+    net_result = gross_rake - total_salary + total_balance_adjustments_profit - total_balance_adjustments_expense
+
     # Write summary
     row = 1
 
@@ -1214,6 +1230,13 @@ def _create_summary_sheet(
     ws.cell(row=row, column=1, value="ДОХОДЫ")
     ws.cell(row=row, column=1).font = Font(bold=True)
     ws.cell(row=row, column=1).fill = MONEY_POSITIVE_FILL
+    row += 1
+
+    ws.cell(row=row, column=1, value="Рейк (грязный):")
+    ws.cell(row=row, column=2, value=gross_rake)
+    ws.cell(row=row, column=2).fill = MONEY_POSITIVE_FILL
+    credit_cell = ws.cell(row=row, column=3, value=f"(кредит {total_chip_income_credit})")
+    credit_cell.font = Font(color="FF0000", bold=True)
     row += 1
 
     ws.cell(row=row, column=1, value="Покупка фишек (наличные):")
@@ -1242,11 +1265,6 @@ def _create_summary_sheet(
         ws.cell(row=row, column=2).fill = MONEY_NEGATIVE_FILL
         row += 1
 
-    ws.cell(row=row, column=1, value="Покупка фишек (кредит):")
-    ws.cell(row=row, column=2, value=total_chip_income_credit)
-    ws.cell(row=row, column=2).fill = MONEY_NEGATIVE_FILL
-    row += 1
-
     # Only show balance adjustments expense for superadmin
     if not is_table_admin:
         ws.cell(row=row, column=1, value="Корректировки баланса (расход):")
@@ -1255,15 +1273,11 @@ def _create_summary_sheet(
         row += 1
     row += 1
 
-    # Net result
-    # Casino profit = cash_buyin - cashout - player_balance (what players have left) - salary - credit_buyin + adj_profit - adj_expense
-    casino_result = total_chip_income_cash - total_chip_cashout - total_player_balance - total_salary - total_chip_income_credit + total_balance_adjustments_profit - total_balance_adjustments_expense
-
     ws.cell(row=row, column=1, value="ИТОГО ЗА ДЕНЬ:")
     ws.cell(row=row, column=1).font = Font(bold=True, size=12)
-    cell = ws.cell(row=row, column=2, value=casino_result)
+    cell = ws.cell(row=row, column=2, value=net_result)
     cell.font = Font(bold=True, size=12)
-    if casino_result >= 0:
+    if net_result >= 0:
         cell.fill = MONEY_POSITIVE_FILL
     else:
         cell.fill = MONEY_NEGATIVE_FILL

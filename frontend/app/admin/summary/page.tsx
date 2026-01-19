@@ -52,10 +52,17 @@ interface SummaryData {
   date: string;
   working_day_start: string;
   working_day_end: string;
-  income: { buyin_cash: number; balance_adjustments: number };
-  expenses: { salaries: number; buyin_credit: number; cashout: number; balance_adjustments: number };
+  income: { gross_rake: number; credit_part: number; balance_adjustments: number };
+  expenses: { salaries: number; balance_adjustments: number };
   result: number;
-  info: { player_balance: number; total_sessions: number; open_sessions: number };
+  info: {
+    buyin_cash: number;
+    buyin_credit: number;
+    cashout: number;
+    player_balance: number;
+    total_sessions: number;
+    open_sessions: number;
+  };
   staff: StaffEntry[];
   balance_adjustments: BalanceAdjustment[];
 }
@@ -188,7 +195,7 @@ export default function SummaryPage() {
           <div className="space-y-3">
             {/* Result Card */}
             <div className="rounded-xl bg-zinc-900 p-4">
-              <div className="text-xs text-zinc-500 mb-1">РЕЙК (ЧИСТЫЙ)</div>
+              <div className="text-xs text-zinc-500 mb-1">ИТОГО ЗА ДЕНЬ</div>
               <div className={`text-3xl font-bold ${resultColor}`}>
                 {data.result >= 0 ? "+" : ""}
                 {formatMoney(data.result)} ₪
@@ -202,12 +209,19 @@ export default function SummaryPage() {
             <div className="rounded-xl bg-zinc-900 p-4">
               <div className="text-xs text-zinc-500 mb-2">ДОХОДЫ</div>
               <div className="space-y-2">
-              <div className="flex justify-between items-center">
-                <span className="text-zinc-300">Покупка фишек (наличные)</span>
-                <span className="text-green-400 font-semibold">
-                  +{formatMoney(data.income.buyin_cash)}
-                </span>
-              </div>
+                <div className="flex justify-between items-center">
+                  <span className="text-zinc-300">Рейк (грязный)</span>
+                  <div className="flex items-baseline gap-2">
+                    <span className="text-green-400 font-semibold">
+                      +{formatMoney(data.income.gross_rake)}
+                    </span>
+                    {data.income.credit_part > 0 && (
+                      <span className="text-red-400 font-semibold text-xs">
+                        (кредит {formatMoney(data.income.credit_part)})
+                      </span>
+                    )}
+                  </div>
+                </div>
               {data.balance_adjustments?.filter((adj) => adj.amount > 0).map((adj) => (
                   <div key={adj.id} className="flex justify-between items-center">
                     <span className="text-zinc-300">{adj.comment}</span>
@@ -231,18 +245,6 @@ export default function SummaryPage() {
                   </span>
                 </div>
               )}
-              <div className="flex justify-between items-center">
-                <span className="text-zinc-300">Покупка фишек (кредит)</span>
-                <span className="text-red-400 font-semibold">
-                  -{formatMoney(data.expenses.buyin_credit)}
-                </span>
-              </div>
-              <div className="flex justify-between items-center">
-                <span className="text-zinc-300">Кэшаут фишек игроками</span>
-                <span className="text-red-400 font-semibold">
-                  -{formatMoney(data.expenses.cashout)}
-                </span>
-              </div>
               {data.balance_adjustments?.filter((adj) => adj.amount < 0).map((adj) => (
                   <div key={adj.id} className="flex justify-between items-center">
                     <span className="text-zinc-300">{adj.comment}</span>
@@ -258,6 +260,18 @@ export default function SummaryPage() {
             <div className="rounded-xl bg-zinc-900 p-4">
               <div className="text-xs text-zinc-500 mb-2">СПРАВОЧНО</div>
               <div className="space-y-2 text-sm">
+                <div className="flex justify-between items-center">
+                  <span className="text-zinc-400">Покупка фишек (наличные)</span>
+                  <span className="text-zinc-300">{formatMoney(data.info.buyin_cash)}</span>
+                </div>
+                <div className="flex justify-between items-center">
+                  <span className="text-zinc-400">Выдано в кредит</span>
+                  <span className="text-zinc-300">{formatMoney(data.info.buyin_credit)}</span>
+                </div>
+                <div className="flex justify-between items-center">
+                  <span className="text-zinc-400">Выдано игрокам (кэшаут)</span>
+                  <span className="text-zinc-300">{formatMoney(data.info.cashout)}</span>
+                </div>
               <div className="flex justify-between items-center">
                 <span className="text-zinc-400">Баланс игроков</span>
                 <span className="text-zinc-300">

@@ -619,8 +619,8 @@ def list_closed_sessions(
             purchases_by_session[sid] = []
         purchases_by_session[sid].append(cp)
 
-        # Track credit purchases for credit display
-        if cp.payment_type == "credit" and cp.amount > 0:
+        # Track credit purchases for credit display (including payoffs)
+        if cp.payment_type == "credit":
             seat_no = int(cast(int, cp.seat_no))
             amount = int(cast(int, cp.amount))
             if sid not in credit_by_session:

@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session as DBSession, joinedload
 
 logger = logging.getLogger(__name__)
 
-from ..core.datetime_utils import utc_now
+from ..core.datetime_utils import to_utc, utc_now
 from ..core.deps import get_current_user, get_db, require_roles
 from ..models.db import ChipOp, ChipPurchase, Seat, Session, SessionDealerAssignment, Table, User
 from ..models.schemas import (
@@ -31,14 +31,13 @@ router = APIRouter(prefix="/api/sessions", tags=["sessions"])
 
 
 def _get_seat_credit(db: DBSession, session_id: str, seat_no: int) -> int:
-    """Get total credit for a specific seat."""
+    """Get total credit for a specific seat (sum of all credit purchases, including payoffs)."""
     credit_purchases = (
         db.query(ChipPurchase)
         .filter(
             ChipPurchase.session_id == session_id,
             ChipPurchase.seat_no == seat_no,
             ChipPurchase.payment_type == "credit",
-            ChipPurchase.amount > 0,
         )
         .all()
     )
@@ -114,25 +113,106 @@ def _require_session_access(user, session):
         raise HTTPException(status_code=403, detail="Forbidden for this table")
 
 
-def _build_session_out(session: Session) -> SessionOut:
-    """Build SessionOut with dealer assignments."""
-    dealer_assignments_out = []
-    if session.dealer_assignments:
-        for assignment in session.dealer_assignments:
-            dealer_hourly_rate = None
-            if assignment.dealer:
-                dealer_hourly_rate = int(cast(int, assignment.dealer.hourly_rate)) if assignment.dealer.hourly_rate else None
+def _compute_dealer_rake_by_assignment(
+    db: DBSession,
+    session_id: str,
+    assignments: list[SessionDealerAssignment],
+    session_closed_at: dt.datetime | None,
+) -> dict[int, int]:
+    """
+    Compute casino profit (rake) attributed to each dealer assignment.
 
-            dealer_assignments_out.append(
-                SessionDealerAssignmentOut(
-                    id=int(cast(int, assignment.id)),
-                    dealer_id=int(cast(int, assignment.dealer_id)),
-                    dealer_username=cast(str, assignment.dealer.username) if assignment.dealer else "Unknown",
-                    dealer_hourly_rate=dealer_hourly_rate,
-                    started_at=cast(dt.datetime, assignment.started_at),
-                    ended_at=cast(dt.datetime, assignment.ended_at) if assignment.ended_at else None,
-                )
+    We attribute negative chip ops that are NOT linked to a ChipPurchase (i.e. not a buyin/cashout)
+    to the dealer assignment active at that moment.
+
+    If assignments overlap, each op is attributed to the assignment with the latest started_at
+    that still covers the op timestamp (prevents double-counting).
+    """
+
+    if not assignments:
+        return {}
+
+    now = utc_now()
+    session_end = session_closed_at or now
+
+    purchase_op_rows = (
+        db.query(ChipPurchase.chip_op_id)
+        .filter(ChipPurchase.session_id == session_id)
+        .all()
+    )
+    purchase_op_ids = {int(cast(int, r[0])) for r in purchase_op_rows if r and r[0] is not None}
+
+    loss_ops = (
+        db.query(ChipOp)
+        .filter(ChipOp.session_id == session_id, ChipOp.amount < 0)
+        .all()
+    )
+
+    rake_by_assignment: dict[int, int] = {int(cast(int, a.id)): 0 for a in assignments if a.id is not None}
+
+    for op in loss_ops:
+        op_id = int(cast(int, op.id))
+        if op_id in purchase_op_ids:
+            continue
+
+        op_time = to_utc(cast(dt.datetime, op.created_at))
+        best: SessionDealerAssignment | None = None
+        best_start: dt.datetime | None = None
+
+        for a in assignments:
+            if a.id is None or a.started_at is None:
+                continue
+            start = to_utc(cast(dt.datetime, a.started_at))
+            end = to_utc(cast(dt.datetime, a.ended_at)) if a.ended_at else session_end
+
+            # Ensure all datetimes are timezone-aware for comparison
+            if start.tzinfo is None:
+                start = start.replace(tzinfo=dt.timezone.utc)
+            if end.tzinfo is None:
+                end = end.replace(tzinfo=dt.timezone.utc)
+
+            if start <= op_time <= end:
+                if best is None or (best_start is not None and start > best_start) or best_start is None:
+                    best = a
+                    best_start = start
+
+        if best is None or best.id is None:
+            continue
+
+        rake_by_assignment[int(cast(int, best.id))] += abs(int(cast(int, op.amount)))
+
+    return rake_by_assignment
+
+
+def _build_session_out(session: Session, db: DBSession) -> SessionOut:
+    """Build SessionOut with dealer assignments (including computed rake per assignment)."""
+
+    assignments = list(session.dealer_assignments or [])
+    rake_by_assignment = _compute_dealer_rake_by_assignment(
+        db=db,
+        session_id=str(cast(str, session.id)),
+        assignments=assignments,
+        session_closed_at=cast(dt.datetime, session.closed_at) if session.closed_at else None,
+    )
+
+    dealer_assignments_out: list[SessionDealerAssignmentOut] = []
+    for assignment in assignments:
+        dealer_hourly_rate = None
+        if assignment.dealer:
+            dealer_hourly_rate = int(cast(int, assignment.dealer.hourly_rate)) if assignment.dealer.hourly_rate else None
+
+        assignment_id = int(cast(int, assignment.id))
+        dealer_assignments_out.append(
+            SessionDealerAssignmentOut(
+                id=assignment_id,
+                dealer_id=int(cast(int, assignment.dealer_id)),
+                dealer_username=cast(str, assignment.dealer.username) if assignment.dealer else "Unknown",
+                dealer_hourly_rate=dealer_hourly_rate,
+                started_at=cast(dt.datetime, assignment.started_at),
+                ended_at=cast(dt.datetime, assignment.ended_at) if assignment.ended_at else None,
+                rake=rake_by_assignment.get(assignment_id, 0),
             )
+        )
 
     return SessionOut(
         id=str(cast(str, session.id)),
@@ -286,7 +366,7 @@ def get_open_session(
             .first()
         )
 
-    return _build_session_out(s) if s else None
+    return _build_session_out(s, db) if s else None
 
 
 @router.post(
@@ -313,7 +393,7 @@ def create_session(
         .first()
     )
     if existing:
-        return SessionOut.model_validate(existing)
+        return _build_session_out(existing, db)
 
     # Validate dealer_id is required
     if payload.dealer_id is None:
@@ -389,7 +469,7 @@ def create_session(
 
     db.commit()
     db.refresh(s)
-    return _build_session_out(s)
+    return _build_session_out(s, db)
 
 
 @router.get(
@@ -518,33 +598,30 @@ def get_session_rake(
         raise HTTPException(status_code=404, detail="Session not found")
     _require_session_access(user, s)
 
-    # Get all chip operations for this session (only positive = buyins)
-    chip_ops = db.query(ChipOp).filter(ChipOp.session_id == session_id).all()
-    total_buyins = sum(int(cast(int, op.amount)) for op in chip_ops if op.amount > 0)
+    # Buyins/cashouts are money movements tracked via ChipPurchase
+    purchases = db.query(ChipPurchase).filter(ChipPurchase.session_id == session_id).all()
+    total_buyins = sum(int(cast(int, p.amount)) for p in purchases if p.amount > 0)
+    total_cashouts = sum(int(cast(int, p.amount)) for p in purchases if p.amount < 0)
 
     # Get total chips currently on table (sum of all seat totals)
     seats = db.query(Seat).filter(Seat.session_id == session_id).all()
     chips_on_table = sum(int(cast(int, seat.total)) for seat in seats)
 
-    # Get total credit (chips bought on credit)
-    credit_purchases = (
-        db.query(ChipPurchase)
-        .filter(
-            ChipPurchase.session_id == session_id,
-            ChipPurchase.payment_type == "credit",
-            ChipPurchase.amount > 0,
-        )
-        .all()
+    # Get total credit (sum of all credit purchases, including payoffs)
+    total_credit = sum(
+        int(cast(int, p.amount))
+        for p in purchases
+        if p.payment_type == "credit"
     )
-    total_credit = sum(int(cast(int, p.amount)) for p in credit_purchases)
 
-    # Rake = casino profit = chips sold to players - chips still on table
-    # This represents what players have lost
-    total_rake = total_buyins - chips_on_table
+    # Gross rake (casino profit) = buyins - cashouts - chips still on table
+    # cashouts are negative amounts, so: buyins + cashouts - chips_on_table
+    total_rake = total_buyins + total_cashouts - chips_on_table
 
     return {
         "total_rake": total_rake,
         "total_buyins": total_buyins,
+        "total_cashouts": total_cashouts,
         "chips_on_table": chips_on_table,
         "total_credit": total_credit,
     }
@@ -576,36 +653,114 @@ def add_chips(
 
     seat_total = _as_int(seat.total)
     delta = int(payload.amount)
-    seat.total = cast(Any, seat_total + delta)
 
-    op = ChipOp(
-        session_id=cast(Any, session_id),
-        seat_no=cast(Any, payload.seat_no),
-        amount=cast(Any, delta),
-    )
-    db.add(op)
-    db.flush()
+    # When buying chips for cash while having credit, first pay off credit
+    if delta > 0 and payload.payment_type == "cash":
+        current_credit = _get_seat_credit(db, session_id, payload.seat_no)
 
-    # Only create ChipPurchase record for positive amounts (buyin)
-    # Negative amounts (cashout) are not tracked as purchases
-    if delta > 0:
-        purchase = ChipPurchase(
-            table_id=_as_int(s.table_id),
-            session_id=str(cast(str, s.id)),
-            seat_no=int(payload.seat_no),
-            amount=delta,
-            chip_op_id=_as_int(op.id),
-            created_by_user_id=_as_int(user.id),
-            payment_type=cast(Any, payload.payment_type),
+        if current_credit > 0:
+            # Amount used to pay off credit
+            credit_payoff = min(delta, current_credit)
+            # Remaining amount for actual chip purchase
+            chips_to_add = delta - credit_payoff
+
+            # Create ChipOp for credit payoff (0 amount - no chips added)
+            if credit_payoff > 0:
+                payoff_op = ChipOp(
+                    session_id=cast(Any, session_id),
+                    seat_no=cast(Any, payload.seat_no),
+                    amount=cast(Any, 0),  # No chips added for credit payoff
+                )
+                db.add(payoff_op)
+                db.flush()
+
+                credit_payoff_purchase = ChipPurchase(
+                    table_id=_as_int(s.table_id),
+                    session_id=str(cast(str, s.id)),
+                    seat_no=int(payload.seat_no),
+                    amount=-credit_payoff,  # Negative to reduce credit
+                    chip_op_id=_as_int(payoff_op.id),
+                    created_by_user_id=_as_int(user.id),
+                    payment_type=cast(Any, "credit"),
+                )
+                db.add(credit_payoff_purchase)
+
+            # Create ChipOp and cash purchase for remaining amount (if any)
+            if chips_to_add > 0:
+                cash_op = ChipOp(
+                    session_id=cast(Any, session_id),
+                    seat_no=cast(Any, payload.seat_no),
+                    amount=cast(Any, chips_to_add),
+                )
+                db.add(cash_op)
+                db.flush()
+
+                cash_purchase = ChipPurchase(
+                    table_id=_as_int(s.table_id),
+                    session_id=str(cast(str, s.id)),
+                    seat_no=int(payload.seat_no),
+                    amount=chips_to_add,
+                    chip_op_id=_as_int(cash_op.id),
+                    created_by_user_id=_as_int(user.id),
+                    payment_type=cast(Any, "cash"),
+                )
+                db.add(cash_purchase)
+
+            seat.total = cast(Any, seat_total + chips_to_add)
+        else:
+            # No credit, normal cash purchase
+            seat.total = cast(Any, seat_total + delta)
+
+            op = ChipOp(
+                session_id=cast(Any, session_id),
+                seat_no=cast(Any, payload.seat_no),
+                amount=cast(Any, delta),
+            )
+            db.add(op)
+            db.flush()
+
+            purchase = ChipPurchase(
+                table_id=_as_int(s.table_id),
+                session_id=str(cast(str, s.id)),
+                seat_no=int(payload.seat_no),
+                amount=delta,
+                chip_op_id=_as_int(op.id),
+                created_by_user_id=_as_int(user.id),
+                payment_type=cast(Any, payload.payment_type),
+            )
+            db.add(purchase)
+    else:
+        # Credit purchase or negative amount (cashout)
+        seat.total = cast(Any, seat_total + delta)
+
+        op = ChipOp(
+            session_id=cast(Any, session_id),
+            seat_no=cast(Any, payload.seat_no),
+            amount=cast(Any, delta),
         )
-        db.add(purchase)
+        db.add(op)
+        db.flush()
 
-        # Auto-increment chips_in_play if total chips bought exceed current chips_in_play
+        # Only create ChipPurchase record for positive amounts (buyin)
+        if delta > 0:
+            purchase = ChipPurchase(
+                table_id=_as_int(s.table_id),
+                session_id=str(cast(str, s.id)),
+                seat_no=int(payload.seat_no),
+                amount=delta,
+                chip_op_id=_as_int(op.id),
+                created_by_user_id=_as_int(user.id),
+                payment_type=cast(Any, payload.payment_type),
+            )
+            db.add(purchase)
+
+    # Auto-increment chips_in_play if total chips bought exceed current chips_in_play
+    if delta > 0:
         current_chips_in_play = _as_int(s.chips_in_play)
         total_chips_bought = sum(
             int(cast(int, p.amount))
             for p in db.query(ChipPurchase).filter(ChipPurchase.session_id == session_id).all()
-        ) + delta  # Include the current purchase
+        )
 
         if total_chips_bought > current_chips_in_play:
             s.chips_in_play = cast(Any, total_chips_bought)
@@ -812,7 +967,7 @@ def close_session(
         db.commit()
         db.refresh(s)
         logger.info(f"Session {session_id} closed successfully")
-        return _build_session_out(s)
+        return _build_session_out(s, db)
 
     except Exception as e:
         logger.error(f"Error closing session {session_id}: {type(e).__name__}: {str(e)}", exc_info=True)
@@ -921,7 +1076,7 @@ def replace_dealer(
     )
 
     logger.info(f"Dealer replaced in session {session_id}: new dealer {new_dealer.username}")
-    return _build_session_out(s)
+    return _build_session_out(s, db)
 
 
 @router.post(
@@ -1028,7 +1183,7 @@ def add_dealer(
     )
 
     logger.info(f"Dealer added to session {session_id}: {new_dealer.username}")
-    return _build_session_out(s)
+    return _build_session_out(s, db)
 
 
 @router.post(
@@ -1128,6 +1283,6 @@ def remove_dealer(
     )
 
     logger.info(f"Dealer assignment {payload.assignment_id} ended in session {session_id}")
-    return _build_session_out(s)
+    return _build_session_out(s, db)
 
 

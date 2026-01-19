@@ -45,6 +45,7 @@ export default function HomePage() {
   const [showReplaceDealerModal, setShowReplaceDealerModal] = useState<boolean>(false);
   const [showAddDealerModal, setShowAddDealerModal] = useState<boolean>(false);
   const [showDealerHistory, setShowDealerHistory] = useState<boolean>(false);
+  const [activeTab, setActiveTab] = useState<"table" | "dealers">("table");
   const [rake, setRake] = useState<{ total_rake: number; total_buyins: number; total_cashouts: number; total_credit: number } | null>(null);
 
   // Roles allowed to start sessions
@@ -358,6 +359,53 @@ export default function HomePage() {
     );
   }, [session]);
 
+  const dealerRakeGrid = useMemo(() => {
+    if (!session?.dealer_assignments || session.dealer_assignments.length === 0) {
+      return null;
+    }
+
+    const sorted = [...session.dealer_assignments].sort(
+      (a, b) => new Date(a.started_at).getTime() - new Date(b.started_at).getTime()
+    );
+
+    const dealerNames: string[] = [];
+    for (const a of sorted) {
+      if (!dealerNames.includes(a.dealer_username)) {
+        dealerNames.push(a.dealer_username);
+      }
+    }
+
+    const maxDealersToShow = 60;
+    const shownDealers = dealerNames.slice(0, maxDealersToShow);
+    const shownSet = new Set(shownDealers);
+    const hiddenDealersCount = Math.max(0, dealerNames.length - shownDealers.length);
+
+    const totalsByDealer = new Map<string, number>();
+    for (const name of shownDealers) {
+      totalsByDealer.set(name, 0);
+    }
+
+    const rows = sorted.map((a) => {
+      const rakeValue = a.rake ?? 0;
+      if (shownSet.has(a.dealer_username)) {
+        totalsByDealer.set(a.dealer_username, (totalsByDealer.get(a.dealer_username) ?? 0) + rakeValue);
+      }
+
+      return {
+        id: a.id,
+        dealer: a.dealer_username,
+        started_at: a.started_at,
+        ended_at: a.ended_at,
+        rake: rakeValue,
+      };
+    });
+
+    const grandTotal = rows.reduce((acc, r) => acc + r.rake, 0);
+    const colTotals = shownDealers.map((name) => totalsByDealer.get(name) ?? 0);
+
+    return { shownDealers, hiddenDealersCount, rows, colTotals, grandTotal };
+  }, [session]);
+
   return (
     <RequireAuth>
       <main className="p-3 max-w-md mx-auto">
@@ -441,160 +489,331 @@ export default function HomePage() {
           </>
         )}
 
+
+
         {!loading && session && (
           <>
-            <div className="mb-3 grid grid-cols-3 gap-2">
-              <div className="rounded-xl bg-zinc-900 text-white px-3 py-3">
-                <div className="text-xs text-zinc-300">
-                  Фишек на столе
-                </div>
-                <div className="text-xl font-bold tabular-nums">
-                  {totals.chips}
-                </div>
-              </div>
-              <div className="rounded-xl bg-zinc-900 text-white px-3 py-3">
-                <div className="text-xs text-zinc-300">
-                  Рейк (грязный)
-                </div>
-                <div className="text-xl font-bold tabular-nums">
-                  {rake?.total_rake ?? 0}
-                </div>
-              </div>
-              <div className="rounded-xl bg-red-900 text-white px-3 py-3">
-                <div className="text-xs text-red-200">
-                  Кредит
-                </div>
-                <div className="text-xl font-bold tabular-nums">
-                  -{rake?.total_credit ?? 0}
-                </div>
-              </div>
+            {/* Tabs */}
+            <div className="mb-3 grid grid-cols-2 gap-2">
+              <button
+                className={`rounded-xl py-2 text-sm font-semibold border ${activeTab === "table" ? "bg-black text-white border-black" : "bg-white text-zinc-900 border-zinc-200"}`}
+                onClick={() => setActiveTab("table")}
+                disabled={busy}
+              >
+                Стол
+              </button>
+              <button
+                className={`rounded-xl py-2 text-sm font-semibold border ${activeTab === "dealers" ? "bg-black text-white border-black" : "bg-white text-zinc-900 border-zinc-200"}`}
+                onClick={() => setActiveTab("dealers")}
+                disabled={busy}
+              >
+                Дилеры
+              </button>
             </div>
 
-            <div className="mb-3 rounded-xl bg-zinc-100 p-4 border border-zinc-200">
-              {/* Active Dealers Section */}
-              <div className="mb-3">
-                <div className="text-xs font-medium text-zinc-600 mb-2">
-                  Активные дилеры
+            {/* Summary cards */}
+            {activeTab === "table" && (
+              <div className="mb-3 grid grid-cols-1 gap-2">
+                <div className="rounded-xl bg-zinc-900 text-white px-3 py-3">
+                  <div className="text-xs text-zinc-300">Фишек на столе</div>
+                  <div className="text-xl font-bold tabular-nums">{totals.chips}</div>
                 </div>
-                {session.dealer_assignments && session.dealer_assignments.filter(a => !a.ended_at).length > 0 ? (
-                  <div className="space-y-2">
-                    {(() => {
-                      const activeDealers = session.dealer_assignments.filter(assignment => !assignment.ended_at);
-                      const hasMultipleDealers = activeDealers.length > 1;
-
-                      return activeDealers.map((assignment) => {
-                        // Calculate earnings for this specific dealer using their hourly rate
-                        const earnings = assignment.dealer_hourly_rate
-                          ? calculateEarnings(assignment.dealer_hourly_rate, assignment.started_at, null)
-                          : 0;
-
-                        return (
-                          <div key={assignment.id} className="rounded-lg bg-white p-2 border border-zinc-200">
-                            <div className="flex items-start justify-between">
-                              <div className="flex-1">
-                                <div className="text-sm font-semibold text-zinc-900">
-                                  {assignment.dealer_username}
-                                </div>
-                                <div className="text-xs text-zinc-500">
-                                  Начал: {formatTime(assignment.started_at)}
-                                </div>
-                                {assignment.dealer_hourly_rate && earnings > 0 && (
-                                  <div className="text-xs text-zinc-500 mt-1">
-                                    Заработано: <span className="font-semibold text-green-600">{formatMoney(earnings)}</span>
-                                  </div>
-                                )}
-                              </div>
-                              {(user?.role === "superadmin" || user?.role === "table_admin") && hasMultipleDealers && (
-                                <button
-                                  className="ml-2 rounded-lg bg-red-600 text-white px-3 py-1 text-xs active:bg-red-700 disabled:opacity-50"
-                                  onClick={() => handleRemoveDealer(assignment.id)}
-                                  disabled={busy}
-                                >
-                                  Завершить
-                                </button>
-                              )}
-                            </div>
-                          </div>
-                        );
-                      });
-                    })()}
-                  </div>
-                ) : (
-                  <div className="text-sm text-zinc-500">Нет активных дилеров</div>
-                )}
               </div>
+            )}
 
-              {/* Waiter Section */}
-              {session.waiter && (
-                <div className="mb-3">
-                  <div className="text-xs font-medium text-zinc-600 mb-2">
-                    Официант
-                  </div>
-                  <div className="rounded-lg bg-white p-2 border border-zinc-200">
-                    <div className="text-sm font-semibold text-zinc-900">
-                      {session.waiter.username}
-                    </div>
-                    <div className="text-xs text-zinc-500">
-                      Начал: {formatTime(session.created_at)}
-                    </div>
-                    {session.waiter.hourly_rate && waiterEarnings > 0 && (
-                      <div className="text-xs text-zinc-500 mt-1">
-                        Заработано: <span className="font-semibold text-green-600">{formatMoney(waiterEarnings)}</span>
+            {activeTab === "dealers" && (
+              <div className="mb-3 grid grid-cols-2 gap-2">
+                <div className="rounded-xl bg-zinc-900 text-white px-3 py-3">
+                  <div className="text-xs text-zinc-300">Фишек на столе</div>
+                  <div className="text-xl font-bold tabular-nums">{totals.chips}</div>
+                </div>
+                <div className="rounded-xl bg-zinc-900 text-white px-3 py-3">
+                  <div className="text-xs text-zinc-300">Рейк (грязный)</div>
+                  <div className="text-xl font-bold tabular-nums">{formatMoney(rake?.total_rake ?? 0)}</div>
+                  {(rake?.total_credit ?? 0) > 0 && (
+                    <div className="mt-1 text-xs text-red-200">(кредит {formatMoney(rake?.total_credit ?? 0)})</div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* Dealers tab content */}
+            {activeTab === "dealers" && (
+              <div className="mb-3 rounded-xl bg-zinc-100 p-4 border border-zinc-200">
+                {/* Rake-by-dealer table output */}
+                {dealerRakeGrid && (
+                  <div className="mb-4">
+                    <div className="text-xs font-medium text-zinc-900 mb-2">Рейк по дилерам</div>
+                    {dealerRakeGrid.hiddenDealersCount > 0 && (
+                      <div className="text-xs text-zinc-700 mb-2">
+                        Показаны первые {dealerRakeGrid.shownDealers.length} дилеров из {dealerRakeGrid.shownDealers.length + dealerRakeGrid.hiddenDealersCount}.
                       </div>
                     )}
+
+                    <div className="overflow-x-auto rounded-lg border border-zinc-300 bg-white shadow-inner">
+                      <table className="min-w-max w-full text-xs border-separate border-spacing-0">
+                        <thead>
+                          <tr>
+                            <th className="sticky left-0 z-20 bg-zinc-800 text-white font-semibold px-2 py-2 text-left border-b border-zinc-300 shadow-[2px_0_4px_rgba(0,0,0,0.1)]">
+                              Время
+                            </th>
+                            {dealerRakeGrid.shownDealers.map((name) => (
+                              <th
+                                key={name}
+                                className="bg-zinc-800 text-white font-semibold px-2 py-2 text-center border-b border-zinc-300 min-w-[80px]"
+                              >
+                                {name}
+                              </th>
+                            ))}
+                            <th className="sticky right-0 z-20 bg-zinc-800 text-white font-semibold px-2 py-2 text-center border-b border-zinc-300 shadow-[-2px_0_4px_rgba(0,0,0,0.1)]">
+                              Итого
+                            </th>
+                          </tr>
+                        </thead>
+
+                        <tbody>
+                          {dealerRakeGrid.rows.map((row) => (
+                            <tr key={row.id} className="odd:bg-white even:bg-zinc-50">
+                              <td className="sticky left-0 z-10 bg-inherit px-2 py-2 text-zinc-900 border-b border-zinc-200 whitespace-nowrap shadow-[2px_0_4px_rgba(0,0,0,0.05)]">
+                                {formatTime(row.started_at)}–{row.ended_at ? formatTime(row.ended_at) : "…"}
+                              </td>
+                              {dealerRakeGrid.shownDealers.map((name) => {
+                                const v = row.dealer === name ? row.rake : 0;
+                                return (
+                                  <td
+                                    key={name}
+                                    className="px-2 py-2 text-center tabular-nums text-zinc-900 border-b border-zinc-200"
+                                  >
+                                    {v > 0 ? formatMoney(v) : ""}
+                                  </td>
+                                );
+                              })}
+                              <td className="sticky right-0 z-10 bg-inherit px-2 py-2 text-center tabular-nums font-semibold text-zinc-900 border-b border-zinc-200 shadow-[-2px_0_4px_rgba(0,0,0,0.05)]">
+                                {row.rake > 0 ? formatMoney(row.rake) : "0"}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+
+                        <tfoot>
+                          <tr>
+                            <td className="sticky left-0 z-20 bg-zinc-800 text-white font-semibold px-2 py-2 text-left border-t border-zinc-300 whitespace-nowrap shadow-[2px_0_4px_rgba(0,0,0,0.1)]">
+                              Итого рейк
+                            </td>
+                            {dealerRakeGrid.colTotals.map((v, idx) => (
+                              <td
+                                key={dealerRakeGrid.shownDealers[idx]}
+                                className="bg-zinc-800 text-white font-semibold px-2 py-2 text-center tabular-nums border-t border-zinc-300"
+                              >
+                                {formatMoney(v)}
+                              </td>
+                            ))}
+                            <td className="sticky right-0 z-20 bg-zinc-800 text-white font-semibold px-2 py-2 text-center tabular-nums border-t border-zinc-300 shadow-[-2px_0_4px_rgba(0,0,0,0.1)]">
+                              {formatMoney(dealerRakeGrid.grandTotal)}
+                            </td>
+                          </tr>
+                          <tr>
+                            <td className="sticky left-0 z-20 bg-zinc-700 text-white font-semibold px-2 py-2 text-left whitespace-nowrap shadow-[2px_0_4px_rgba(0,0,0,0.1)]">
+                              Часы работы
+                            </td>
+                            {dealerRakeGrid.shownDealers.map((name) => {
+                              const dealerAssignments = session.dealer_assignments?.filter(a => a.dealer_username === name) || [];
+                              const totalHours = dealerAssignments.reduce((sum, a) => {
+                                // Parse timestamps as UTC by appending 'Z' if not present
+                                const startStr = a.started_at.endsWith('Z') ? a.started_at : a.started_at + 'Z';
+                                const start = new Date(startStr);
+                                const end = a.ended_at
+                                  ? new Date(a.ended_at.endsWith('Z') ? a.ended_at : a.ended_at + 'Z')
+                                  : new Date();
+                                const hours = (end.getTime() - start.getTime()) / (1000 * 60 * 60);
+                                return sum + hours;
+                              }, 0);
+                              return (
+                                <td
+                                  key={name}
+                                  className="bg-zinc-700 text-white font-semibold px-2 py-2 text-center tabular-nums"
+                                >
+                                  {totalHours.toFixed(1)} ч
+                                </td>
+                              );
+                            })}
+                            <td className="sticky right-0 z-20 bg-zinc-700 text-white font-semibold px-2 py-2 text-center tabular-nums shadow-[-2px_0_4px_rgba(0,0,0,0.1)]">
+                              —
+                            </td>
+                          </tr>
+                          <tr>
+                            <td className="sticky left-0 z-20 bg-zinc-700 text-white font-semibold px-2 py-2 text-left whitespace-nowrap shadow-[2px_0_4px_rgba(0,0,0,0.1)]">
+                              Зарплата
+                            </td>
+                            {dealerRakeGrid.shownDealers.map((name) => {
+                              const dealerAssignments = session.dealer_assignments?.filter(a => a.dealer_username === name) || [];
+                              const totalHours = dealerAssignments.reduce((sum, a) => {
+                                // Parse timestamps as UTC by appending 'Z' if not present
+                                const startStr = a.started_at.endsWith('Z') ? a.started_at : a.started_at + 'Z';
+                                const start = new Date(startStr);
+                                const end = a.ended_at
+                                  ? new Date(a.ended_at.endsWith('Z') ? a.ended_at : a.ended_at + 'Z')
+                                  : new Date();
+                                const hours = (end.getTime() - start.getTime()) / (1000 * 60 * 60);
+                                return sum + hours;
+                              }, 0);
+                              const hourlyRate = dealerAssignments[0]?.dealer_hourly_rate || 0;
+                              const salary = Math.round(totalHours * hourlyRate);
+                              return (
+                                <td
+                                  key={name}
+                                  className="bg-zinc-700 text-white font-semibold px-2 py-2 text-center tabular-nums"
+                                >
+                                  {formatMoney(salary)}
+                                </td>
+                              );
+                            })}
+                            <td className="sticky right-0 z-20 bg-zinc-700 text-white font-semibold px-2 py-2 text-center tabular-nums shadow-[-2px_0_4px_rgba(0,0,0,0.1)]">
+                              {formatMoney(
+                                dealerRakeGrid.shownDealers.reduce((sum, name) => {
+                                  const dealerAssignments = session.dealer_assignments?.filter(a => a.dealer_username === name) || [];
+                                  const totalHours = dealerAssignments.reduce((s, a) => {
+                                    // Parse timestamps as UTC by appending 'Z' if not present
+                                    const startStr = a.started_at.endsWith('Z') ? a.started_at : a.started_at + 'Z';
+                                    const start = new Date(startStr);
+                                    const end = a.ended_at
+                                      ? new Date(a.ended_at.endsWith('Z') ? a.ended_at : a.ended_at + 'Z')
+                                      : new Date();
+                                    const hours = (end.getTime() - start.getTime()) / (1000 * 60 * 60);
+                                    return s + hours;
+                                  }, 0);
+                                  const hourlyRate = dealerAssignments[0]?.dealer_hourly_rate || 0;
+                                  return sum + Math.round(totalHours * hourlyRate);
+                                }, 0)
+                              )}
+                            </td>
+                          </tr>
+                        </tfoot>
+                      </table>
+                    </div>
                   </div>
+                )}
+
+                {/* Active Dealers Section */}
+                <div className="mb-3">
+                  <div className="text-xs font-medium text-zinc-600 mb-2">Активные дилеры</div>
+                  {session.dealer_assignments && session.dealer_assignments.filter((a) => !a.ended_at).length > 0 ? (
+                    <div className="space-y-2">
+                      {(() => {
+                        const activeDealers = session.dealer_assignments.filter((assignment) => !assignment.ended_at);
+                        const hasMultipleDealers = activeDealers.length > 1;
+
+                        return activeDealers.map((assignment) => {
+                          const earnings = assignment.dealer_hourly_rate
+                            ? calculateEarnings(assignment.dealer_hourly_rate, assignment.started_at, null)
+                            : 0;
+
+                          return (
+                            <div key={assignment.id} className="rounded-lg bg-white p-2 border border-zinc-200">
+                              <div className="flex items-start justify-between">
+                                <div className="flex-1">
+                                  <div className="text-sm font-semibold text-zinc-900">{assignment.dealer_username}</div>
+                                  <div className="text-xs text-zinc-500">Начал: {formatTime(assignment.started_at)}</div>
+                                  {assignment.dealer_hourly_rate && earnings > 0 && (
+                                    <div className="text-xs text-zinc-500 mt-1">
+                                      Заработано:{" "}
+                                      <span className="font-semibold text-green-600">{formatMoney(earnings)}</span>
+                                    </div>
+                                  )}
+                                </div>
+                                {(user?.role === "superadmin" || user?.role === "table_admin") && hasMultipleDealers && (
+                                  <button
+                                    className="ml-2 rounded-lg bg-red-600 text-white px-3 py-1 text-xs active:bg-red-700 disabled:opacity-50"
+                                    onClick={() => handleRemoveDealer(assignment.id)}
+                                    disabled={busy}
+                                  >
+                                    Завершить
+                                  </button>
+                                )}
+                              </div>
+                            </div>
+                          );
+                        });
+                      })()}
+                    </div>
+                  ) : (
+                    <div className="text-sm text-zinc-500">Нет активных дилеров</div>
+                  )}
                 </div>
-              )}
 
-              {/* Dealer history toggle */}
-              {session.dealer_assignments && session.dealer_assignments.length > 1 && (
-                <button
-                  className="text-xs text-blue-600 underline mb-2"
-                  onClick={() => setShowDealerHistory(!showDealerHistory)}
-                >
-                  {showDealerHistory ? "Скрыть историю дилеров" : `История дилеров (${session.dealer_assignments.length})`}
-                </button>
-              )}
-
-              {/* Dealer history list */}
-              {showDealerHistory && session.dealer_assignments && session.dealer_assignments.length > 0 && (
-                <div className="mb-3 border-t border-zinc-200 pt-2">
-                  <div className="text-xs text-zinc-500 mb-1">История дилеров:</div>
-                  <div className="space-y-1">
-                    {session.dealer_assignments.map((assignment) => (
-                      <div key={assignment.id} className="text-xs text-zinc-700 flex justify-between">
-                        <span>{assignment.dealer_username}</span>
-                        <span className="text-zinc-400">
-                          {formatTime(assignment.started_at)}
-                          {assignment.ended_at ? ` - ${formatTime(assignment.ended_at)}` : " (текущий)"}
-                        </span>
-                      </div>
-                    ))}
+                {/* Waiter Section */}
+                {session.waiter && (
+                  <div className="mb-3">
+                    <div className="text-xs font-medium text-zinc-600 mb-2">Официант</div>
+                    <div className="rounded-lg bg-white p-2 border border-zinc-200">
+                      <div className="text-sm font-semibold text-zinc-900">{session.waiter.username}</div>
+                      <div className="text-xs text-zinc-500">Начал: {formatTime(session.created_at)}</div>
+                      {session.waiter.hourly_rate && waiterEarnings > 0 && (
+                        <div className="text-xs text-zinc-500 mt-1">
+                          Заработано:{" "}
+                          <span className="font-semibold text-green-600">{formatMoney(waiterEarnings)}</span>
+                        </div>
+                      )}
+                    </div>
                   </div>
-                </div>
-              )}
+                )}
 
-              {/* Dealer management buttons for table_admin and superadmin */}
-              {(user?.role === "superadmin" || user?.role === "table_admin") && (
-                <div className="grid grid-cols-2 gap-2">
+                {/* Dealer history toggle */}
+                {session.dealer_assignments && session.dealer_assignments.length > 1 && (
                   <button
-                    className="rounded-xl bg-green-600 text-white py-2 text-sm active:bg-green-700 disabled:opacity-50"
-                    onClick={() => setShowAddDealerModal(true)}
-                    disabled={busy}
+                    className="text-xs text-blue-600 underline mb-2"
+                    onClick={() => setShowDealerHistory(!showDealerHistory)}
                   >
-                    Добавить дилера
+                    {showDealerHistory
+                      ? "Скрыть историю дилеров"
+                      : `История дилеров (${session.dealer_assignments.length})`}
                   </button>
-                  <button
-                    className="rounded-xl bg-blue-600 text-white py-2 text-sm active:bg-blue-700 disabled:opacity-50"
-                    onClick={() => setShowReplaceDealerModal(true)}
-                    disabled={busy || (session.dealer_assignments && session.dealer_assignments.filter(a => !a.ended_at).length > 1)}
-                    title={session.dealer_assignments && session.dealer_assignments.filter(a => !a.ended_at).length > 1 ? "Невозможно заменить дилера при наличии нескольких активных дилеров" : ""}
-                  >
-                    Заменить дилера
-                  </button>
-                </div>
-              )}
-            </div>
+                )}
+
+                {/* Dealer history list */}
+                {showDealerHistory && session.dealer_assignments && session.dealer_assignments.length > 0 && (
+                  <div className="mb-3 border-t border-zinc-200 pt-2">
+                    <div className="text-xs text-zinc-500 mb-1">История дилеров:</div>
+                    <div className="space-y-1">
+                      {session.dealer_assignments.map((assignment) => (
+                        <div key={assignment.id} className="text-xs text-zinc-700 flex justify-between">
+                          <span>{assignment.dealer_username}</span>
+                          <span className="text-zinc-400">
+                            {formatTime(assignment.started_at)}
+                            {assignment.ended_at ? ` - ${formatTime(assignment.ended_at)}` : " (текущий)"}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Dealer management buttons for table_admin and superadmin */}
+                {(user?.role === "superadmin" || user?.role === "table_admin") && (
+                  <div className="grid grid-cols-2 gap-2">
+                    <button
+                      className="rounded-xl bg-green-600 text-white py-2 text-sm active:bg-green-700 disabled:opacity-50"
+                      onClick={() => setShowAddDealerModal(true)}
+                      disabled={busy}
+                    >
+                      Добавить дилера
+                    </button>
+                    <button
+                      className="rounded-xl bg-blue-600 text-white py-2 text-sm active:bg-blue-700 disabled:opacity-50"
+                      onClick={() => setShowReplaceDealerModal(true)}
+                      disabled={busy || (session.dealer_assignments && session.dealer_assignments.filter((a) => !a.ended_at).length > 1)}
+                      title={
+                        session.dealer_assignments && session.dealer_assignments.filter((a) => !a.ended_at).length > 1
+                          ? "Невозможно заменить дилера при наличии нескольких активных дилеров"
+                          : ""
+                      }
+                    >
+                      Заменить дилера
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
 
             <div className="flex gap-2 mb-3">
               <button
@@ -614,10 +833,9 @@ export default function HomePage() {
               </button>
             </div>
 
-            <SeatGrid
-              seats={seats}
-              onSeatClick={(seat) => setActiveSeatNo(seat.seat_no)}
-            />
+            {activeTab === "table" && (
+              <SeatGrid seats={seats} onSeatClick={(seat) => setActiveSeatNo(seat.seat_no)} />
+            )}
 
             <SeatActionSheet
               open={activeSeatNo !== null}

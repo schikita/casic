@@ -23,20 +23,16 @@ export default memo(function SeatGrid({
           <div className="font-semibold truncate text-black">
             {seat.player_name ?? "—"}
           </div>
-          {/* Cash amount - always shown in green if positive */}
-          {seat.cash > 0 && (
+          {/* Display chips: green for cash-only, red for credit with playable/total */}
+          {seat.credit > 0 ? (
+            <div className="text-sm font-semibold tabular-nums text-red-600">
+              {seat.total}/{seat.credit}
+            </div>
+          ) : seat.total > 0 ? (
             <div className="text-lg font-bold tabular-nums text-green-500">
-              {seat.cash}
+              {seat.total}
             </div>
-          )}
-          {/* Credit amount - shown in dark red below cash if any */}
-          {seat.credit > 0 && (
-            <div className="text-sm font-semibold tabular-nums text-red-800">
-              {seat.credit}
-            </div>
-          )}
-          {/* Show total if no cash and no credit (zero or negative) */}
-          {seat.cash === 0 && seat.credit === 0 && (
+          ) : (
             <div
               className={[
                 "text-lg font-bold tabular-nums",
