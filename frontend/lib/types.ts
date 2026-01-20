@@ -95,3 +95,9 @@ export type SeatHistoryEntry = {
   payment_type?: "cash" | "credit" | null;
   created_by_username?: string | null;
 };
+
+export type SeatHistory = {
+  seat_no: number;
+  player_name: string | null;
+  entries: SeatHistoryEntry[];
+};

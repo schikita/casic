@@ -22,6 +22,7 @@ from ..models.schemas import (
     ReplaceDealerIn,
     SeatAssignIn,
     SeatHistoryEntryOut,
+    SeatHistoryOut,
     SeatOut,
     SessionCreateIn,
     SessionDealerAssignmentOut,
@@ -674,6 +675,90 @@ def get_seat_history(
     history.sort(key=lambda x: x.created_at, reverse=True)
 
     return history
+
+
+@router.get(
+    "/{session_id}/seats-history",
+    response_model=list[SeatHistoryOut],
+    dependencies=[Depends(require_roles("superadmin", "dealer", "table_admin"))],
+)
+def get_all_seats_history(
+    session_id: str,
+    db: DBSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Get history for all seats in a session."""
+    s = db.query(Session).filter(Session.id == session_id).first()
+    if not s:
+        raise HTTPException(status_code=404, detail="Session not found")
+    _require_session_access(user, s, db)
+
+    # Get all seats for this session
+    seats = db.query(Seat).filter(Seat.session_id == session_id).order_by(Seat.seat_no).all()
+
+    result: list[SeatHistoryOut] = []
+
+    for seat in seats:
+        seat_no = int(cast(int, seat.seat_no))
+        history: list[SeatHistoryEntryOut] = []
+
+        # Get name changes
+        name_changes = (
+            db.query(SeatNameChange)
+            .options(joinedload(SeatNameChange.created_by))
+            .filter(SeatNameChange.session_id == session_id, SeatNameChange.seat_no == seat_no)
+            .all()
+        )
+        for nc in name_changes:
+            created_by_username = None
+            if nc.created_by is not None:
+                created_by_username = cast(str, nc.created_by.username)
+            entry_type = cast(str, nc.change_type) if nc.change_type else "name_change"
+            history.append(SeatHistoryEntryOut(
+                type=entry_type,
+                created_at=cast(dt.datetime, nc.created_at),
+                old_name=nc.old_name,
+                new_name=nc.new_name,
+                created_by_username=created_by_username,
+            ))
+
+        # Get chip operations
+        chip_ops = (
+            db.query(ChipOp)
+            .filter(ChipOp.session_id == session_id, ChipOp.seat_no == seat_no)
+            .all()
+        )
+        for op in chip_ops:
+            purchase = (
+                db.query(ChipPurchase)
+                .options(joinedload(ChipPurchase.created_by))
+                .filter(ChipPurchase.chip_op_id == op.id)
+                .first()
+            )
+            payment_type = None
+            created_by_username = None
+            if purchase:
+                payment_type = cast(str, purchase.payment_type)
+                if purchase.created_by is not None:
+                    created_by_username = cast(str, purchase.created_by.username)
+            history.append(SeatHistoryEntryOut(
+                type="chip_adjustment",
+                created_at=cast(dt.datetime, op.created_at),
+                amount=int(cast(int, op.amount)),
+                payment_type=payment_type,
+                created_by_username=created_by_username,
+            ))
+
+        # Sort by created_at descending (newest first)
+        history.sort(key=lambda x: x.created_at, reverse=True)
+
+        result.append(SeatHistoryOut(
+            seat_no=seat_no,
+            player_name=seat.player_name,
+            entries=history,
+        ))
+
+    return result
 
 
 @router.get(

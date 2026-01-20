@@ -140,6 +140,24 @@ export default function SessionsPage() {
     rakeEntries: DealerRakeEntry[];
     totalRake: number;
   } | null>(null);
+  const [seatsHistoryModal, setSeatsHistoryModal] = useState<{
+    sessionId: string;
+    sessionLabel: string;
+  } | null>(null);
+  const [seatsHistory, setSeatsHistory] = useState<Array<{
+    seat_no: number;
+    player_name: string | null;
+    entries: Array<{
+      type: string;
+      created_at: string;
+      old_name?: string | null;
+      new_name?: string | null;
+      amount?: number | null;
+      payment_type?: string | null;
+      created_by_username?: string | null;
+    }>;
+  }>>([]);
+  const [seatsHistoryLoading, setSeatsHistoryLoading] = useState(false);
 
   const loadTables = useCallback(async () => {
     try {
@@ -196,6 +214,23 @@ export default function SessionsPage() {
       setLoading(false);
     }
   }, [selectedTableId]);
+
+  const loadSeatsHistory = useCallback(async (sessionId: string, sessionLabel: string) => {
+    setSeatsHistoryModal({ sessionId, sessionLabel });
+    setSeatsHistoryLoading(true);
+    try {
+      const res = await apiFetch(`/api/sessions/${sessionId}/seats-history`);
+      if (res.ok) {
+        setSeatsHistory(await res.json());
+      } else {
+        setSeatsHistory([]);
+      }
+    } catch {
+      setSeatsHistory([]);
+    } finally {
+      setSeatsHistoryLoading(false);
+    }
+  }, []);
 
   // Load tables on mount and auto-select table
   useEffect(() => {
@@ -390,6 +425,14 @@ export default function SessionsPage() {
                   </span>
                 </div>
               </div>
+
+              {/* Seats history button */}
+              <button
+                className="mt-3 w-full rounded-xl bg-zinc-800 text-zinc-300 py-2 text-sm hover:bg-zinc-700"
+                onClick={() => loadSeatsHistory(ongoingSession.id, "Текущая сессия")}
+              >
+                История мест
+              </button>
             </div>
           )}
 
@@ -504,6 +547,14 @@ export default function SessionsPage() {
                             )}
                           </span>
                         </div>
+
+                        {/* Seats history button */}
+                        <button
+                          className="mt-2 w-full rounded-xl bg-zinc-800 text-zinc-300 py-2 text-sm hover:bg-zinc-700"
+                          onClick={() => loadSeatsHistory(session.id, `Сессия #${session.id.slice(0, 8)}`)}
+                        >
+                          История мест
+                        </button>
                       </div>
                     </div>
                   ))}
@@ -567,6 +618,125 @@ export default function SessionsPage() {
               <button
                 className="w-full rounded-xl bg-zinc-700 text-white py-3 hover:bg-zinc-600"
                 onClick={() => setRakeHistoryModal(null)}
+              >
+                Закрыть
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Seats History Fullscreen Overlay */}
+        {seatsHistoryModal && (
+          <div className="fixed inset-0 z-50 bg-zinc-900 flex flex-col">
+            <div className="flex items-center justify-between p-4 border-b border-zinc-700">
+              <div className="text-lg font-bold text-white">
+                История мест: {seatsHistoryModal.sessionLabel}
+              </div>
+              <button
+                className="text-zinc-400 px-3 py-2 hover:text-white"
+                onClick={() => {
+                  setSeatsHistoryModal(null);
+                  setSeatsHistory([]);
+                }}
+              >
+                Закрыть
+              </button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto p-4">
+              {seatsHistoryLoading ? (
+                <div className="text-center text-zinc-500 py-8">Загрузка...</div>
+              ) : seatsHistory.length === 0 ? (
+                <div className="text-center text-zinc-500 py-8">Нет данных</div>
+              ) : (
+                <div className="space-y-6">
+                  {seatsHistory.map((seat) => (
+                    <div
+                      key={seat.seat_no}
+                      className="rounded-xl bg-zinc-800 border border-zinc-700 overflow-hidden"
+                    >
+                      {/* Seat header */}
+                      <div className="bg-zinc-700/50 px-4 py-3 border-b border-zinc-600">
+                        <div className="flex items-center justify-between">
+                          <span className="text-white font-bold">Место #{seat.seat_no}</span>
+                          {seat.player_name && (
+                            <span className="text-zinc-300 text-sm">{seat.player_name}</span>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Seat entries */}
+                      <div className="p-3">
+                        {seat.entries.length === 0 ? (
+                          <div className="text-zinc-500 text-sm text-center py-2">Нет записей</div>
+                        ) : (
+                          <div className="space-y-2">
+                            {seat.entries.map((entry, idx) => (
+                              <div
+                                key={idx}
+                                className="rounded-lg bg-zinc-900 px-3 py-2"
+                              >
+                                <div className="flex items-center justify-between text-xs text-zinc-500 mb-1">
+                                  <span>
+                                    {new Date(entry.created_at).toLocaleString("ru-RU", {
+                                      day: "2-digit",
+                                      month: "2-digit",
+                                      hour: "2-digit",
+                                      minute: "2-digit",
+                                    })}
+                                  </span>
+                                  {entry.created_by_username && (
+                                    <span>{entry.created_by_username}</span>
+                                  )}
+                                </div>
+                                {entry.type === "player_left" ? (
+                                  <div className="text-sm text-orange-400 font-semibold">
+                                    🚪 Игрок ушёл: {entry.old_name || "—"}
+                                  </div>
+                                ) : entry.type === "name_change" ? (
+                                  <div className="text-sm text-zinc-300">
+                                    <span className="font-semibold">Имя изменено:</span>{" "}
+                                    <span className="text-zinc-500">{entry.old_name || "—"}</span>
+                                    {" → "}
+                                    <span className="text-white font-medium">{entry.new_name || "—"}</span>
+                                  </div>
+                                ) : (
+                                  <div className="text-sm">
+                                    <span
+                                      className={
+                                        (entry.amount ?? 0) >= 0
+                                          ? "text-green-400 font-bold"
+                                          : "text-red-400 font-bold"
+                                      }
+                                    >
+                                      {(entry.amount ?? 0) >= 0 ? "+" : ""}
+                                      {formatMoney(entry.amount ?? 0)}
+                                    </span>
+                                    {entry.payment_type && (
+                                      <span className="ml-2 text-zinc-500">
+                                        ({entry.payment_type === "credit" ? "📝 кредит" : "💵 наличные"})
+                                      </span>
+                                    )}
+                                  </div>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="p-4 border-t border-zinc-700 bg-zinc-800">
+              <button
+                className="w-full rounded-xl bg-zinc-700 text-white py-3 hover:bg-zinc-600"
+                onClick={() => {
+                  setSeatsHistoryModal(null);
+                  setSeatsHistory([]);
+                }}
               >
                 Закрыть
               </button>

@@ -174,6 +174,13 @@ class SeatHistoryEntryOut(BaseModel):
     created_by_username: str | None = None
 
 
+class SeatHistoryOut(BaseModel):
+    """History for a single seat."""
+    seat_no: int
+    player_name: str | None
+    entries: list[SeatHistoryEntryOut]
+
+
 class ChipCreateIn(BaseModel):
     seat_no: int = Field(ge=1, le=10)
     amount: int

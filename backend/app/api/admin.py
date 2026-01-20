@@ -158,7 +158,9 @@ def delete_table(
     db: DBSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> dict[str, str]:
-    """Delete a table by ID."""
+    """Delete a table by ID, including all related sessions and their data."""
+    from ..models.db import SeatNameChange
+
     owner_id = get_owner_id_for_filter(current_user)
 
     # Query with owner filter for multi-tenancy
@@ -166,11 +168,41 @@ def delete_table(
     if not table:
         raise HTTPException(status_code=404, detail="Table not found")
 
-    # Check if table has any sessions
-    session_count = db.query(Session).filter(Session.table_id == table_id).count()
-    if session_count > 0:
-        raise HTTPException(status_code=400, detail="Cannot delete table with existing sessions")
+    # Get all sessions for this table
+    sessions = db.query(Session).filter(Session.table_id == table_id).all()
+    session_ids = [s.id for s in sessions]
 
+    if session_ids:
+        # Delete all related data for these sessions
+
+        # 1. Delete DealerRakeEntries (linked via assignment_id)
+        assignment_ids = [
+            a.id for a in db.query(SessionDealerAssignment)
+            .filter(SessionDealerAssignment.session_id.in_(session_ids))
+            .all()
+        ]
+        if assignment_ids:
+            db.query(DealerRakeEntry).filter(DealerRakeEntry.assignment_id.in_(assignment_ids)).delete(synchronize_session=False)
+
+        # 2. Delete SessionDealerAssignments
+        db.query(SessionDealerAssignment).filter(SessionDealerAssignment.session_id.in_(session_ids)).delete(synchronize_session=False)
+
+        # 3. Delete ChipPurchases (linked via session_id)
+        db.query(ChipPurchase).filter(ChipPurchase.session_id.in_(session_ids)).delete(synchronize_session=False)
+
+        # 4. Delete ChipOps
+        db.query(ChipOp).filter(ChipOp.session_id.in_(session_ids)).delete(synchronize_session=False)
+
+        # 5. Delete SeatNameChanges
+        db.query(SeatNameChange).filter(SeatNameChange.session_id.in_(session_ids)).delete(synchronize_session=False)
+
+        # 6. Delete Seats
+        db.query(Seat).filter(Seat.session_id.in_(session_ids)).delete(synchronize_session=False)
+
+        # 7. Delete Sessions
+        db.query(Session).filter(Session.table_id == table_id).delete(synchronize_session=False)
+
+    # Finally delete the table itself
     db.delete(table)
     db.commit()
     return {"message": "Table deleted successfully"}
