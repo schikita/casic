@@ -24,7 +24,7 @@ export default function LoginPage() {
       const role: UserRole = u.role;
 
       if (role === "superadmin") {
-        router.replace("/admin/summary");
+        router.replace("/admin?tab=users");
         return;
       }
 

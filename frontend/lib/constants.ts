@@ -5,7 +5,7 @@
 /**
  * Default number of seats for a new table
  */
-export const DEFAULT_SEATS_COUNT = 24;
+export const DEFAULT_SEATS_COUNT = 10;
 
 /**
  * Default purchase limit for chip purchases
@@ -30,7 +30,7 @@ export const MIN_SEATS_COUNT = 1;
 /**
  * Maximum number of seats for a table
  */
-export const MAX_SEATS_COUNT = 60;
+export const MAX_SEATS_COUNT = 10;
 
 /**
  * Working day start hour (24-hour format)

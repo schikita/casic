@@ -68,60 +68,38 @@ export default function TopMenu() {
                 Стол
               </button>
 
-              {canAccessAdmin && (
+              {canAccessAdmin && !isSuperadmin && (
                 <>
                   <div className="text-xs text-zinc-400 mt-2 font-medium">Админка</div>
-                  {isSuperadmin && (
-                    <button
-                      className="rounded-xl bg-zinc-100 px-4 py-3 text-left text-zinc-700 focus:outline-none focus:ring-2 focus:ring-zinc-400"
-                      onClick={() => go("/admin?tab=tables")}
-                    >
-                      Админ: Столы
-                    </button>
-                  )}
+                  <button
+                    className="rounded-xl bg-zinc-100 px-4 py-3 text-left text-zinc-700 focus:outline-none focus:ring-2 focus:ring-zinc-400"
+                    onClick={() => go("/admin?tab=tables")}
+                  >
+                    Столы
+                  </button>
                   <button
                     className="rounded-xl bg-zinc-100 px-4 py-3 text-left text-zinc-700 focus:outline-none focus:ring-2 focus:ring-zinc-400"
                     onClick={() => go("/admin?tab=users")}
                   >
-                    Админ: Пользователи
-                  </button>
-                  {isSuperadmin && (
-                    <button
-                      className="rounded-xl bg-zinc-100 px-4 py-3 text-left text-zinc-700 focus:outline-none focus:ring-2 focus:ring-zinc-400"
-                      onClick={() => go("/admin?tab=purchases")}
-                    >
-                      Админ: Покупки
-                    </button>
-                  )}
-                  <button
-                    className="rounded-xl bg-zinc-100 px-4 py-3 text-left text-zinc-700 focus:outline-none focus:ring-2 focus:ring-zinc-400"
-                    onClick={() => go("/admin/export")}
-                  >
-                    Админ: Выгрузка
+                    Персонал
                   </button>
                   <button
                     className="rounded-xl bg-zinc-100 px-4 py-3 text-left text-zinc-700 focus:outline-none focus:ring-2 focus:ring-zinc-400"
                     onClick={() => go("/admin/sessions")}
                   >
-                    Админ: Сессии
+                    Сессии
                   </button>
                   <button
                     className="rounded-xl bg-zinc-100 px-4 py-3 text-left text-zinc-700 focus:outline-none focus:ring-2 focus:ring-zinc-400"
                     onClick={() => go("/admin/summary")}
                   >
-                    Админ: Итоги дня
-                  </button>
-                  <button
-                    className="rounded-xl bg-zinc-100 px-4 py-3 text-left text-zinc-700 focus:outline-none focus:ring-2 focus:ring-zinc-400"
-                    onClick={() => go("/admin/balance-adjustments")}
-                  >
-                    Админ: Баланс
+                    Итоги дня
                   </button>
                   <button
                     className="rounded-xl bg-zinc-100 px-4 py-3 text-left text-zinc-700 focus:outline-none focus:ring-2 focus:ring-zinc-400"
                     onClick={() => go("/admin/report")}
                   >
-                    Админ: Отчёт XLSX
+                    Отчёт XLSX
                   </button>
                 </>
               )}

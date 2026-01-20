@@ -32,7 +32,7 @@ class TableOut(BaseModel):
 
 class TableCreateIn(BaseModel):
     name: str = Field(min_length=1, max_length=120)
-    seats_count: int = Field(default=24, ge=1, le=60)
+    seats_count: int = Field(default=10, ge=1, le=10)
 
 
 class UserCreateIn(BaseModel):
@@ -66,7 +66,7 @@ class LoginOut(BaseModel):
 class SessionCreateIn(BaseModel):
     table_id: int | None = None
     date: dt.date | None = None
-    seats_count: int = Field(default=24, ge=1, le=60)
+    seats_count: int = Field(default=10, ge=1, le=10)
     dealer_id: int | None = None  # Required for session start (validated in endpoint)
     waiter_id: int | None = None  # Optional
     chips_in_play: int = Field(default=0, ge=0)  # Initial chip count on table (informational)
@@ -148,13 +148,13 @@ class SeatAssignIn(BaseModel):
 
 
 class ChipCreateIn(BaseModel):
-    seat_no: int = Field(ge=1, le=60)
+    seat_no: int = Field(ge=1, le=10)
     amount: int
     payment_type: str = Field(default="cash", pattern="^(cash|credit)$")  # "cash" or "credit"
 
 
 class UndoIn(BaseModel):
-    seat_no: int = Field(ge=1, le=60)
+    seat_no: int = Field(ge=1, le=10)
 
 
 class ChipPurchaseOut(BaseModel):
@@ -224,7 +224,7 @@ class ClosedSessionOut(BaseModel):
 
 class CloseCreditIn(BaseModel):
     session_id: str
-    seat_no: int = Field(..., ge=1, le=60)
+    seat_no: int = Field(..., ge=1, le=10)
     amount: int = Field(..., gt=0, description="Amount of credit to close")
 
 

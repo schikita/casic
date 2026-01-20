@@ -37,8 +37,8 @@ function AdminPageContent() {
     return [];
   }, [user]);
   
-  // Check if current user can manage tables (superadmin only)
-  const canManageTables = user?.role === "superadmin";
+  // Check if current user can manage tables (table_admin only)
+  const canManageTables = user?.role === "table_admin";
 
   // Read tab from URL query parameter
   useEffect(() => {
@@ -74,8 +74,14 @@ function AdminPageContent() {
     }
   }, [availableRoles, newRole]);
 
-  // ------- Delete confirmation dialog -------
+  // ------- Delete confirmation dialogs -------
   const [deleteConfirmUserId, setDeleteConfirmUserId] = useState<number | null>(null);
+  const [deleteConfirmTableId, setDeleteConfirmTableId] = useState<number | null>(null);
+  
+  // ------- Table edit form -------
+  const [editingTableId, setEditingTableId] = useState<number | null>(null);
+  const [editTableName, setEditTableName] = useState("");
+  const [editTableSeats, setEditTableSeats] = useState<number>(DEFAULT_SEATS_COUNT);
 
   // ------- Purchases controls -------
   const [purchaseLimit, setPurchaseLimit] = useState<number>(DEFAULT_PURCHASE_LIMIT);
@@ -139,6 +145,9 @@ function AdminPageContent() {
     setBusy(true);
     try {
       const u = await apiJson<User[]>("/api/admin/users");
+      // DIAGNOSTIC LOG: Log received users
+      console.log("[DEBUG] loadUsersOnly: Received users:", u.map(u => ({id: u.id, username: u.username, role: u.role})));
+      console.log("[DEBUG] loadUsersOnly: Current user:", user);
       setUsers(u);
       normalizeUserDrafts(u);
     } catch (e) {
@@ -146,7 +155,7 @@ function AdminPageContent() {
     } finally {
       setBusy(false);
     }
-  }, [clearNotices, normalizeUserDrafts]);
+  }, [clearNotices, normalizeUserDrafts, user]);
 
   const loadPurchasesOnly = useCallback(async () => {
     clearNotices();
@@ -218,7 +227,7 @@ function AdminPageContent() {
       return;
     }
     if (!(seats >= MIN_SEATS_COUNT && seats <= MAX_SEATS_COUNT)) {
-      setError("Количество мест должно быть от 1 до 60");
+      setError("Количество мест должно быть от 1 до 10");
       return;
     }
 
@@ -373,6 +382,69 @@ function AdminPageContent() {
     }
   }, [clearNotices, showOk, loadUsersOnly]);
 
+  const deleteTable = useCallback(async (tableId: number) => {
+    clearNotices();
+    setBusy(true);
+    try {
+      await apiJson<{message: string}>(`/api/admin/tables/${tableId}`, {
+        method: "DELETE",
+      });
+      setDeleteConfirmTableId(null);
+      await loadTablesOnly();
+      showOk("Стол удалён");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Ошибка удаления стола");
+    } finally {
+      setBusy(false);
+    }
+  }, [clearNotices, showOk, loadTablesOnly]);
+
+  const updateTable = useCallback(async (tableId: number) => {
+    clearNotices();
+    
+    const name = editTableName.trim();
+    const seats = editTableSeats;
+    
+    if (!isNonEmpty(name)) {
+      setError("Введите название стола");
+      return;
+    }
+    if (!(seats >= MIN_SEATS_COUNT && seats <= MAX_SEATS_COUNT)) {
+      setError("Количество мест должно быть от 1 до 10");
+      return;
+    }
+    
+    setBusy(true);
+    try {
+      await apiJson<Table>(`/api/admin/tables/${tableId}`, {
+        method: "PUT",
+        body: JSON.stringify({ name, seats_count: seats }),
+      });
+      
+      setEditingTableId(null);
+      setEditTableName("");
+      setEditTableSeats(DEFAULT_SEATS_COUNT);
+      await loadTablesOnly();
+      showOk("Стол обновлён");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Ошибка обновления стола");
+    } finally {
+      setBusy(false);
+    }
+  }, [clearNotices, showOk, editTableName, editTableSeats, loadTablesOnly]);
+
+  const startEditingTable = useCallback((table: Table) => {
+    setEditingTableId(table.id);
+    setEditTableName(table.name);
+    setEditTableSeats(table.seats_count);
+  }, []);
+
+  const cancelEditingTable = useCallback(() => {
+    setEditingTableId(null);
+    setEditTableName("");
+    setEditTableSeats(DEFAULT_SEATS_COUNT);
+  }, []);
+
   const refreshCurrentTab = useCallback(() => {
     if (tab === "tables") return loadTablesOnly();
     if (tab === "users") return loadUsersOnly();
@@ -466,7 +538,7 @@ function AdminPageContent() {
                 </button>
 
                 <div className="text-xs text-zinc-400">
-                  Рекомендуется держать seats_count в диапазоне 1–60.
+                  Количество мест: от 1 до 10.
                 </div>
               </div>
             </div>
@@ -483,18 +555,73 @@ function AdminPageContent() {
               ) : (
                 <div className="grid gap-2">
                   {tables.map((t) => (
-                    <div
-                      key={t.id}
-                      className="rounded-xl bg-black text-white px-4 py-3"
-                    >
-                      <div className="flex items-center justify-between">
-                        <div className="font-semibold">{t.name}</div>
-                        <div className="text-xs text-white/60">ID: {t.id}</div>
-                      </div>
-                      <div className="text-sm text-zinc-300">
-                        Мест:{" "}
-                        <span className="text-white">{t.seats_count}</span>
-                      </div>
+                    <div key={t.id}>
+                      {editingTableId === t.id ? (
+                        // Edit mode
+                        <div className="rounded-xl bg-black text-white px-4 py-3">
+                          <div className="grid gap-2">
+                            <input
+                              value={editTableName}
+                              onChange={(e) => setEditTableName(e.target.value)}
+                              className={inputDark}
+                              placeholder="Название"
+                            />
+                            <input
+                              type="number"
+                              value={editTableSeats}
+                              onChange={(e) => setEditTableSeats(Number(e.target.value))}
+                              className={inputDark}
+                              placeholder="Мест"
+                              min={MIN_SEATS_COUNT}
+                              max={MAX_SEATS_COUNT}
+                            />
+                            <div className="flex gap-2">
+                              <button
+                                className="flex-1 rounded-xl bg-green-600 text-white px-4 py-2 font-semibold disabled:opacity-60 hover:bg-green-700/90"
+                                onClick={() => updateTable(t.id)}
+                                disabled={busy}
+                              >
+                                Сохранить
+                              </button>
+                              <button
+                                className="flex-1 rounded-xl bg-zinc-700 text-white px-4 py-2 font-semibold disabled:opacity-60 hover:bg-zinc-600/90"
+                                onClick={cancelEditingTable}
+                                disabled={busy}
+                              >
+                                Отмена
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      ) : (
+                        // View mode
+                        <div className="rounded-xl bg-black text-white px-4 py-3">
+                          <div className="flex items-center justify-between">
+                            <div className="font-semibold">{t.name}</div>
+                            <div className="text-xs text-white/60">ID: {t.id}</div>
+                          </div>
+                          <div className="text-sm text-zinc-300">
+                            Мест:{" "}
+                            <span className="text-white">{t.seats_count}</span>
+                          </div>
+                          <div className="flex gap-2 mt-3">
+                            <button
+                              className="flex-1 rounded-xl bg-zinc-700 text-white px-4 py-2 font-semibold disabled:opacity-60 hover:bg-zinc-600/90"
+                              onClick={() => startEditingTable(t)}
+                              disabled={busy}
+                            >
+                              Изменить
+                            </button>
+                            <button
+                              className="flex-1 rounded-xl bg-red-600 text-white px-4 py-2 font-semibold disabled:opacity-60 hover:bg-red-700/90"
+                              onClick={() => setDeleteConfirmTableId(t.id)}
+                              disabled={busy}
+                            >
+                              Удалить
+                            </button>
+                          </div>
+                        </div>
+                      )}
                     </div>
                   ))}
                 </div>
@@ -518,13 +645,15 @@ function AdminPageContent() {
                   placeholder="Логин"
                 />
 
-                <input
-                  value={newPassword}
-                  onChange={(e) => setNewPassword(e.target.value)}
-                  className={inputDark}
-                  placeholder={newRole === "table_admin" ? "Пароль *" : "Пароль (если нужно)"}
-                  type="password"
-                />
+                {newRole === "table_admin" && (
+                  <input
+                    value={newPassword}
+                    onChange={(e) => setNewPassword(e.target.value)}
+                    className={inputDark}
+                    placeholder="Пароль *"
+                    type="password"
+                  />
+                )}
 
                 <select
                   className={selectDark}
@@ -696,19 +825,21 @@ function AdminPageContent() {
                                 />
                               )}
 
-                              <input
-                                value={pwd}
-                                onChange={(e) =>
-                                  setDraftPassword((prev) => ({
-                                    ...prev,
-                                    [u.id]: e.target.value,
-                                  }))
-                                }
-                                className={inputDark}
-                                placeholder={role === "table_admin" ? "Новый пароль *" : "Новый пароль (если нужно)"}
-                                type="password"
-                                disabled={busy}
-                              />
+                              {role === "table_admin" && (
+                                <input
+                                  value={pwd}
+                                  onChange={(e) =>
+                                    setDraftPassword((prev) => ({
+                                      ...prev,
+                                      [u.id]: e.target.value,
+                                    }))
+                                  }
+                                  className={inputDark}
+                                  placeholder="Новый пароль *"
+                                  type="password"
+                                  disabled={busy}
+                                />
+                              )}
 
                               <div className="flex gap-2">
                                 <button
@@ -774,6 +905,40 @@ function AdminPageContent() {
               </div>
             )}
           </>
+        )}
+
+        {/* Table delete confirmation dialog */}
+        {deleteConfirmTableId !== null && (
+          <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50">
+            <div className="rounded-xl bg-zinc-900 p-6 max-w-sm w-full mx-4">
+              <div className="text-white font-semibold text-lg mb-2">
+                Подтверждение
+              </div>
+              <div className="text-white/80 mb-4">
+                Вы уверены, что хотите удалить стол{" "}
+                <span className="font-semibold">
+                  {tables.find((t) => t.id === deleteConfirmTableId)?.name}
+                </span>
+                ?
+              </div>
+              <div className="flex gap-2">
+                <button
+                  className="flex-1 rounded-xl bg-zinc-800 text-white px-4 py-3 font-semibold disabled:opacity-60 hover:bg-zinc-700/90"
+                  onClick={() => setDeleteConfirmTableId(null)}
+                  disabled={busy}
+                >
+                  Отмена
+                </button>
+                <button
+                  className="flex-1 rounded-xl bg-red-600 text-white px-4 py-3 font-semibold disabled:opacity-60 hover:bg-red-700/90"
+                  onClick={() => deleteTable(deleteConfirmTableId)}
+                  disabled={busy}
+                >
+                  Удалить
+                </button>
+              </div>
+            </div>
+          </div>
         )}
 
         {tab === "purchases" && (

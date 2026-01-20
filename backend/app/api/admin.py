@@ -1,12 +1,7 @@
 from __future__ import annotations
 
-import csv
 import datetime as dt
-import io
-from urllib.parse import quote
-
 from fastapi import APIRouter, Depends, HTTPException, Query
-from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session as DBSession, joinedload
 
 from typing import Any, cast
@@ -40,22 +35,6 @@ def _normalize_username(v: str) -> str:
 
 def _normalize_table_name(v: str) -> str:
     return v.strip()
-
-
-def _sanitize_cell(v: str) -> str:
-    """Sanitize cell value for CSV/TSV export by removing line breaks and tabs."""
-    return v.replace("\r", " ").replace("\n", " ").replace("\t", " ")
-
-
-def _ascii_filename_component(name: str) -> str:
-    """Convert filename to ASCII-safe characters for HTTP headers."""
-    out = []
-    for ch in name:
-        if ch.isascii() and (ch.isalnum() or ch in "._-"):
-            out.append(ch)
-        else:
-            out.append("_")
-    return "".join(out)
 
 
 def _resolve_table_id_for_user(user: User, table_id: int | None = None) -> int | None:
@@ -109,7 +88,7 @@ def list_tables(
     return [TableOut.model_validate(t)] if t else []
 
 
-@router.post("/tables", response_model=TableOut, dependencies=[Depends(require_roles("superadmin"))])
+@router.post("/tables", response_model=TableOut, dependencies=[Depends(require_roles("table_admin"))])
 def create_table(payload: TableCreateIn, db: DBSession = Depends(get_db)) -> TableOut:
     name = _normalize_table_name(payload.name)
     if not name:
@@ -126,21 +105,76 @@ def create_table(payload: TableCreateIn, db: DBSession = Depends(get_db)) -> Tab
     return TableOut.model_validate(t)
 
 
+@router.put("/tables/{table_id}", response_model=TableOut, dependencies=[Depends(require_roles("table_admin"))])
+def update_table(table_id: int, payload: TableCreateIn, db: DBSession = Depends(get_db)) -> TableOut:
+    """Update a table by ID."""
+    table = db.query(Table).filter(Table.id == table_id).first()
+    if not table:
+        raise HTTPException(status_code=404, detail="Table not found")
+    
+    name = _normalize_table_name(payload.name)
+    if not name:
+        raise HTTPException(status_code=400, detail="Table name is required")
+    
+    # Check if name is being changed and if new name already exists
+    if name != table.name:
+        existing = db.query(Table).filter(Table.name == name).first()
+        if existing:
+            raise HTTPException(status_code=400, detail="Table name already exists")
+    
+    table.name = name
+    table.seats_count = payload.seats_count
+    db.commit()
+    db.refresh(table)
+    return TableOut.model_validate(table)
+
+
+@router.delete("/tables/{table_id}", dependencies=[Depends(require_roles("table_admin"))])
+def delete_table(table_id: int, db: DBSession = Depends(get_db)) -> dict[str, str]:
+    """Delete a table by ID."""
+    table = db.query(Table).filter(Table.id == table_id).first()
+    if not table:
+        raise HTTPException(status_code=404, detail="Table not found")
+    
+    # Check if table has any sessions
+    session_count = db.query(Session).filter(Session.table_id == table_id).count()
+    if session_count > 0:
+        raise HTTPException(status_code=400, detail="Cannot delete table with existing sessions")
+    
+    # Check if table has any assigned table_admin users
+    admin_count = db.query(User).filter(User.role == "table_admin", User.table_id == table_id).count()
+    if admin_count > 0:
+        raise HTTPException(status_code=400, detail="Cannot delete table with assigned table_admin users")
+    
+    db.delete(table)
+    db.commit()
+    return {"message": "Table deleted successfully"}
+
+
 @router.get("/users", response_model=list[UserOut], dependencies=[Depends(require_roles("superadmin", "table_admin"))])
 def list_users(db: DBSession = Depends(get_db), current_user: User = Depends(get_current_user)) -> list[UserOut]:
     """
     List users based on role:
-    - superadmin: sees all users
+    - superadmin: sees all users except their own account
     - table_admin: sees only dealer and waiter users
     """
     role = cast(str, current_user.role)
     
+    # DIAGNOSTIC LOG: Log current user info
+    print(f"[DEBUG] list_users called by user_id={current_user.id}, username={current_user.username}, role={role}")
+    
     if role == "superadmin":
-        # Superadmin sees all users
-        users = db.query(User).order_by(User.id.asc()).all()
+        # Superadmin sees all users except their own account
+        users = db.query(User).filter(User.id != current_user.id).order_by(User.id.asc()).all()
+        print(f"[DEBUG] Superadmin query returned {len(users)} users (excluding own account)")
     else:
         # Table admin only sees dealer and waiter users
         users = db.query(User).filter(User.role.in_(["dealer", "waiter"])).order_by(User.id.asc()).all()
+        print(f"[DEBUG] Table admin query returned {len(users)} users")
+    
+    # DIAGNOSTIC LOG: Log returned user IDs and roles
+    user_ids = [(u.id, u.username, u.role) for u in users]
+    print(f"[DEBUG] Returning users: {user_ids}")
     
     return [UserOut.model_validate(u) for u in users]
 
@@ -451,130 +485,6 @@ def _get_working_day_boundaries(date: dt.date) -> tuple[dt.datetime, dt.datetime
     start = dt.datetime.combine(date, dt.time(20, 0, 0))
     end = dt.datetime.combine(date + dt.timedelta(days=1), dt.time(18, 0, 0))
     return start, end
-
-
-@router.get("/export")
-def export_day(
-    date: str = Query(..., description="YYYY-MM-DD"),
-    table_id: int | None = Query(default=None),
-    format: str = Query(default="tsv", pattern="^(tsv|csv)$"),
-    db: DBSession = Depends(get_db),
-    user: User = Depends(get_current_user),
-):
-    try:
-        d = dt.date.fromisoformat(date)
-    except ValueError:
-        raise HTTPException(status_code=400, detail=ErrorMessages.INVALID_DATE_FORMAT)
-
-    tid = _resolve_table_id_for_user(user, table_id)
-
-    table = db.query(Table).filter(Table.id == tid).first()
-    if not table:
-        raise HTTPException(status_code=404, detail=ErrorMessages.TABLE_NOT_FOUND)
-
-    # Get working day boundaries (20:00 to 18:00 next day)
-    start_time, end_time = _get_working_day_boundaries(d)
-
-    sessions = (
-        db.query(Session)
-        .filter(Session.table_id == tid, Session.created_at >= start_time, Session.created_at < end_time)
-        .order_by(Session.created_at.asc())
-        .all()
-    )
-
-    fmt = format
-    delim = "\t" if fmt == "tsv" else ","
-    media_type = "text/tab-separated-values" if fmt == "tsv" else "text/csv"
-
-    session_ids = [cast(str, s.id) for s in sessions]
-    seats_by_session: dict[str, list[Seat]] = {}
-    # Track session status for determining how to calculate total
-    session_status: dict[str, str] = {cast(str, s.id): cast(str, s.status) for s in sessions}
-
-    if session_ids:
-        seats = (
-            db.query(Seat)
-            .filter(Seat.session_id.in_(session_ids))
-            .order_by(Seat.session_id.asc(), Seat.seat_no.asc())
-            .all()
-        )
-        for seat in seats:
-            sid = cast(str, seat.session_id)
-            seats_by_session.setdefault(sid, []).append(seat)
-
-    # For closed sessions, get cashout amounts per seat
-    # Cashouts are recorded as negative ChipPurchase amounts at session close
-    cashouts_by_seat: dict[tuple[str, int], int] = {}
-    if session_ids:
-        # Get all negative chip purchases (cashouts) for these sessions
-        cashout_purchases = (
-            db.query(ChipPurchase)
-            .filter(
-                ChipPurchase.session_id.in_(session_ids),
-                ChipPurchase.amount < 0,
-            )
-            .all()
-        )
-        for cp in cashout_purchases:
-            key = (cast(str, cp.session_id), int(cast(int, cp.seat_no)))
-            # Sum up all cashouts for this seat (in case there are multiple)
-            # Store as positive number (absolute value)
-            cashouts_by_seat[key] = cashouts_by_seat.get(key, 0) + abs(int(cast(int, cp.amount)))
-
-    table_name = cast(str, table.name)
-
-    filename = f"session_{table_name}_{date}.{fmt}"
-    filename_ascii = f"session_{_ascii_filename_component(table_name)}_{date}.{fmt}"
-
-    def gen():
-        buf = io.StringIO()
-        w = csv.writer(buf, delimiter=delim, lineterminator="\n", quoting=csv.QUOTE_MINIMAL)
-
-        w.writerow(["table", "date", "session_id", "status", "seat_no", "player_name", "total"])
-        yield buf.getvalue()
-        buf.seek(0)
-        buf.truncate(0)
-
-        for s in sessions:
-            sid = cast(str, s.id)
-            s_status = cast(str, s.status)
-            seats = seats_by_session.get(sid, [])
-
-            for seat in seats:
-                pn = cast(str, seat.player_name) if seat.player_name is not None else ""
-                pn = _sanitize_cell(pn)
-                seat_no = int(cast(int, seat.seat_no))
-
-                # For open sessions, use current seat.total
-                # For closed sessions, use the cashout amount (what they left with)
-                if s_status == "open":
-                    total = int(cast(int, seat.total))
-                else:
-                    # Closed session - use cashout amount
-                    total = cashouts_by_seat.get((sid, seat_no), 0)
-
-                w.writerow(
-                    [
-                        table_name,
-                        s.date.isoformat(),
-                        sid,
-                        s_status,
-                        str(seat_no),
-                        pn,
-                        str(total),
-                    ]
-                )
-                yield buf.getvalue()
-                buf.seek(0)
-                buf.truncate(0)
-
-    headers = {
-        "Content-Disposition": (
-            f'attachment; filename="{filename_ascii}"; '
-            f"filename*=UTF-8''{quote(filename)}"
-        )
-    }
-    return StreamingResponse(gen(), media_type=media_type, headers=headers)
 
 
 @router.get(
