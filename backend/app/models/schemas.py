@@ -82,6 +82,17 @@ class StaffOut(BaseModel):
         from_attributes = True
 
 
+class DealerRakeEntryOut(BaseModel):
+    """Output schema for a single rake entry."""
+    id: int
+    amount: int
+    created_at: dt.datetime
+    created_by_username: str | None = None
+
+    class Config:
+        from_attributes = True
+
+
 class SessionDealerAssignmentOut(BaseModel):
     """Output schema for dealer assignment within a session."""
     id: int
@@ -91,6 +102,7 @@ class SessionDealerAssignmentOut(BaseModel):
     started_at: dt.datetime
     ended_at: dt.datetime | None = None
     rake: int | None = None  # Rake attributed to this dealer during their shift
+    rake_entries: list[DealerRakeEntryOut] = []  # Individual rake entries for audit trail
 
     class Config:
         from_attributes = True
@@ -138,6 +150,7 @@ class SeatOut(BaseModel):
     total: int
     cash: int = 0  # Cash portion of total
     credit: int = 0  # Credit portion of total
+    total_chips_played: int = 0  # Sum of all chip purchases (cash + credit)
 
     class Config:
         from_attributes = True
@@ -145,6 +158,19 @@ class SeatOut(BaseModel):
 
 class SeatAssignIn(BaseModel):
     player_name: str | None
+
+
+class SeatHistoryEntryOut(BaseModel):
+    """Single entry in seat history."""
+    type: str  # "name_change", "chip_adjustment", or "player_left"
+    created_at: dt.datetime
+    # For name changes and player_left
+    old_name: str | None = None
+    new_name: str | None = None
+    # For chip adjustments
+    amount: int | None = None
+    payment_type: str | None = None  # "cash" or "credit"
+    created_by_username: str | None = None
 
 
 class ChipCreateIn(BaseModel):

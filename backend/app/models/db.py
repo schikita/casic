@@ -28,14 +28,20 @@ class Table(Base):
     __tablename__ = "tables"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    name = Column(String(120), unique=True, nullable=False)
+    name = Column(String(120), nullable=False)
     seats_count = Column(Integer, nullable=False, default=24)
 
+    # Multi-tenancy: owner_id references the table_admin who owns this table (casino)
+    # NULL for legacy data or superadmin-created tables
+    owner_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
+
     sessions = relationship("Session", back_populates="table", cascade="all, delete-orphan")
+    owner = relationship("User", foreign_keys=[owner_id])
 
     __table_args__ = (
-        # Ensure seats_count is positive
-        # Note: Check constraints are not supported in SQLite
+        # Unique constraint on (name, owner_id) to allow same table name for different casinos
+        UniqueConstraint("name", "owner_id", name="uq_table_name_owner"),
+        Index("ix_table_owner", "owner_id"),
     )
 
 
@@ -50,10 +56,16 @@ class User(Base):
     is_active = Column(Boolean, nullable=False, default=True)
     hourly_rate = Column(Integer, nullable=True)  # Hourly rate in chips for dealer/waiter
 
-    table = relationship("Table")
+    # Multi-tenancy: owner_id references the table_admin who owns this staff member (casino)
+    # NULL for superadmin and table_admin users (they are owners themselves)
+    # Set for dealer and waiter users to indicate which casino they belong to
+    owner_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
+
+    table = relationship("Table", foreign_keys=[table_id])
+    owner = relationship("User", remote_side=[id], foreign_keys=[owner_id])
 
     __table_args__ = (
-        # Note: Check constraints for role and hourly_rate are not supported in SQLite
+        Index("ix_user_owner", "owner_id"),
     )
 
 
@@ -165,10 +177,53 @@ class SessionDealerAssignment(Base):
 
     session = relationship("Session", back_populates="dealer_assignments")
     dealer = relationship("User")
+    rake_entries = relationship("DealerRakeEntry", back_populates="assignment", cascade="all, delete-orphan", order_by="DealerRakeEntry.created_at")
 
     __table_args__ = (
         Index("ix_session_dealer_assignment_session", "session_id"),
         Index("ix_session_dealer_assignment_dealer", "dealer_id"),
+    )
+
+
+class DealerRakeEntry(Base):
+    """
+    Tracks individual rake entries for a dealer assignment.
+    Rake is additive - each entry adds to the total, enabling audit trail.
+    """
+    __tablename__ = "dealer_rake_entries"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    assignment_id = Column(Integer, ForeignKey("session_dealer_assignments.id"), nullable=False, index=True)
+    amount = Column(Integer, nullable=False)  # Rake amount for this entry
+    created_at = Column(DateTime, nullable=False, default=utc_now, index=True)
+    created_by_user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+
+    assignment = relationship("SessionDealerAssignment", back_populates="rake_entries")
+    created_by = relationship("User")
+
+    __table_args__ = (
+        Index("ix_dealer_rake_entry_assignment", "assignment_id"),
+    )
+
+
+class SeatNameChange(Base):
+    """Tracks player name changes for audit purposes."""
+    __tablename__ = "seat_name_changes"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    session_id = Column(String(36), ForeignKey("sessions.id"), nullable=False, index=True)
+    seat_no = Column(Integer, nullable=False)
+    old_name = Column(String(255), nullable=True)
+    new_name = Column(String(255), nullable=True)
+    change_type = Column(String(32), nullable=False, default="name_change")  # "name_change" or "player_left"
+    created_at = Column(DateTime, nullable=False, default=utc_now, index=True)
+    created_by_user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+
+    session = relationship("Session")
+    created_by = relationship("User")
+
+    __table_args__ = (
+        Index("ix_seat_name_change_session_seat", "session_id", "seat_no"),
     )
 
 
@@ -189,4 +244,13 @@ class CasinoBalanceAdjustment(Base):
     # User who made the adjustment
     created_by_user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
 
-    created_by = relationship("User")
+    # Multi-tenancy: owner_id references the table_admin who owns this balance adjustment (casino)
+    # Set when table_admin creates an adjustment to indicate which casino it belongs to
+    owner_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
+
+    created_by = relationship("User", foreign_keys=[created_by_user_id])
+    owner = relationship("User", foreign_keys=[owner_id])
+
+    __table_args__ = (
+        Index("ix_balance_adjustment_owner", "owner_id"),
+    )

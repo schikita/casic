@@ -33,42 +33,42 @@ export default function CashConfirmationModal({
       onClick={(e) => e.target === e.currentTarget && !loading && onCancel()}
     >
       <div
-        className="bg-white w-full max-w-md rounded-2xl p-5 shadow-xl mx-4"
+        className="bg-zinc-900 w-full max-w-md rounded-2xl p-5 shadow-xl mx-4"
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="text-lg font-bold text-black mb-4">
+        <div className="text-lg font-bold text-white mb-4">
           Способ оплаты
         </div>
 
-        <div className="mb-6 rounded-xl bg-zinc-100 p-4">
-          <div className="text-sm text-zinc-600 mb-2">
+        <div className="mb-6 rounded-xl bg-zinc-800 border border-zinc-700 p-4">
+          <div className="text-sm text-zinc-400 mb-2">
             {actionText} фишки
           </div>
-          <div className="text-2xl font-bold text-zinc-900 mb-3">
+          <div className="text-2xl font-bold text-white mb-3">
             {Math.abs(amount)} ₪
           </div>
-          <div className="text-sm text-zinc-700">
+          <div className="text-sm text-zinc-300">
             {displayName}
           </div>
         </div>
 
         <div className="space-y-3">
           <button
-            className="w-full rounded-xl bg-green-600 text-white py-4 font-bold text-lg active:bg-green-700 disabled:opacity-60 focus:outline-none focus:ring-2 focus:ring-zinc-400"
+            className="w-full rounded-xl bg-green-600 text-white py-4 font-bold text-lg active:bg-green-700 disabled:opacity-60 focus:outline-none"
             onClick={onCash}
             disabled={loading}
           >
             💵 Наличные
           </button>
           <button
-            className="w-full rounded-xl bg-blue-600 text-white py-4 font-bold text-lg active:bg-blue-700 disabled:opacity-60 focus:outline-none focus:ring-2 focus:ring-zinc-400"
+            className="w-full rounded-xl bg-blue-600 text-white py-4 font-bold text-lg active:bg-blue-700 disabled:opacity-60 focus:outline-none"
             onClick={onCredit}
             disabled={loading}
           >
             📝 Кредит
           </button>
           <button
-            className="w-full rounded-xl bg-zinc-300 text-zinc-900 py-4 font-bold text-lg active:bg-zinc-400 disabled:opacity-60 focus:outline-none focus:ring-2 focus:ring-zinc-400"
+            className="w-full rounded-xl bg-zinc-700 text-zinc-300 py-4 font-bold text-lg active:bg-zinc-600 disabled:opacity-60 focus:outline-none border border-zinc-600"
             onClick={onCancel}
             disabled={loading}
           >

@@ -93,13 +93,13 @@ export default function StartSessionModal({
       }}
     >
       <div
-        className="bg-white w-full max-w-md rounded-2xl p-5 shadow-xl mx-4"
+        className="bg-zinc-900 w-full max-w-md rounded-2xl p-5 shadow-xl mx-4"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between mb-4">
-          <div className="text-lg font-bold text-black">Открыть сессию</div>
+          <div className="text-lg font-bold text-white">Открыть сессию</div>
           <button
-            className="text-zinc-600 px-3 py-2 disabled:opacity-50 focus:outline-none focus:ring-2 focus:ring-zinc-400"
+            className="text-zinc-400 px-3 py-2 disabled:opacity-50 hover:text-white focus:outline-none"
             onClick={onClose}
             disabled={submitting}
           >
@@ -108,21 +108,21 @@ export default function StartSessionModal({
         </div>
 
         {error && (
-          <div className="mb-4 rounded-xl bg-red-50 text-red-700 px-3 py-2 text-sm">
+          <div className="mb-4 rounded-xl bg-red-900/50 text-red-200 px-3 py-2 text-sm">
             {error}
           </div>
         )}
 
         {loading ? (
-          <div className="text-center py-6 text-zinc-600">Загрузка...</div>
+          <div className="text-center py-6 text-zinc-400">Загрузка...</div>
         ) : (
           <>
             <div className="mb-4">
-              <label className="block text-sm font-medium text-zinc-600 mb-2">
-                Дилер <span className="text-red-500">*</span>
+              <label className="block text-sm font-medium text-zinc-400 mb-2">
+                Дилер <span className="text-red-400">*</span>
               </label>
               <select
-                className="w-full rounded-xl border border-zinc-300 bg-white text-black px-3 py-3 text-base focus:outline-none focus:ring-2 focus:ring-zinc-400 placeholder-zinc-600"
+                className="w-full rounded-xl border border-zinc-700 bg-zinc-800 text-white px-3 py-3 text-base focus:outline-none focus:ring-2 focus:ring-zinc-500"
                 value={selectedDealer ?? ""}
                 onChange={(e) =>
                   setSelectedDealer(e.target.value ? Number(e.target.value) : null)
@@ -145,11 +145,11 @@ export default function StartSessionModal({
             </div>
 
             <div className="mb-4">
-              <label className="block text-sm font-medium text-zinc-600 mb-2">
-                Официант <span className="text-zinc-400">(опционально)</span>
+              <label className="block text-sm font-medium text-zinc-400 mb-2">
+                Официант <span className="text-zinc-500">(опционально)</span>
               </label>
               <select
-                className="w-full rounded-xl border border-zinc-300 bg-white text-black px-3 py-3 text-base focus:outline-none focus:ring-2 focus:ring-zinc-400 placeholder-zinc-600"
+                className="w-full rounded-xl border border-zinc-700 bg-zinc-800 text-white px-3 py-3 text-base focus:outline-none focus:ring-2 focus:ring-zinc-500"
                 value={selectedWaiter ?? ""}
                 onChange={(e) =>
                   setSelectedWaiter(e.target.value ? Number(e.target.value) : null)
@@ -167,7 +167,7 @@ export default function StartSessionModal({
             </div>
 
             <button
-              className="w-full rounded-xl bg-green-600 text-white py-4 font-bold text-lg active:bg-green-700 disabled:opacity-60 focus:outline-none focus:ring-2 focus:ring-zinc-400"
+              className="w-full rounded-xl bg-green-600 text-white py-4 font-bold text-lg active:bg-green-700 disabled:opacity-60 focus:outline-none"
               onClick={handleSubmit}
               disabled={!canSubmit}
             >

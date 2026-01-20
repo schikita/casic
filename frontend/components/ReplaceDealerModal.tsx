@@ -93,27 +93,27 @@ export default function ReplaceDealerModal({
       onClick={onClose}
     >
       <div
-        className="bg-white w-full rounded-t-2xl p-4 pb-6 shadow-xl"
+        className="bg-zinc-900 w-full rounded-t-2xl p-4 pb-6 shadow-xl"
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="text-lg font-bold text-black mb-3">Заменить дилера</div>
+        <div className="text-lg font-bold text-white mb-3">Заменить дилера</div>
 
         {error && (
-          <div className="mb-3 rounded-xl bg-red-100 text-red-700 px-3 py-2 text-sm">
+          <div className="mb-3 rounded-xl bg-red-900/50 text-red-200 px-3 py-2 text-sm">
             {error}
           </div>
         )}
 
         {/* Rake input for outgoing dealer */}
         <div className="mb-4">
-          <label className="block text-sm text-zinc-600 mb-1">
+          <label className="block text-sm text-zinc-400 mb-1">
             Рейк уходящего дилера (₪)
           </label>
           <input
             type="number"
             inputMode="numeric"
             min="0"
-            className="w-full rounded-xl border border-zinc-300 bg-white text-black px-3 py-3 text-base focus:outline-none focus:ring-2 focus:ring-zinc-400"
+            className="w-full rounded-xl border border-zinc-700 bg-zinc-800 text-white px-3 py-3 text-base focus:outline-none focus:ring-2 focus:ring-zinc-500 placeholder-zinc-500"
             value={outgoingDealerRake}
             onChange={(e) => setOutgoingDealerRake(e.target.value)}
             placeholder="0"
@@ -127,9 +127,9 @@ export default function ReplaceDealerModal({
           <div className="text-zinc-500 text-sm mb-3">Нет доступных дилеров для замены</div>
         ) : (
           <div className="mb-4">
-            <label className="block text-sm text-zinc-600 mb-1">Выберите нового дилера</label>
+            <label className="block text-sm text-zinc-400 mb-1">Выберите нового дилера</label>
             <select
-              className="w-full rounded-xl border border-zinc-300 bg-white text-black px-3 py-3 text-base focus:outline-none focus:ring-2 focus:ring-zinc-400"
+              className="w-full rounded-xl border border-zinc-700 bg-zinc-800 text-white px-3 py-3 text-base focus:outline-none focus:ring-2 focus:ring-zinc-500"
               value={selectedDealerId ?? ""}
               onChange={(e) => setSelectedDealerId(Number(e.target.value))}
               disabled={submitting}
@@ -145,7 +145,7 @@ export default function ReplaceDealerModal({
 
         <div className="grid grid-cols-2 gap-2">
           <button
-            className="rounded-xl bg-zinc-100 px-4 py-3 text-zinc-700 active:bg-zinc-200"
+            className="rounded-xl bg-zinc-700 px-4 py-3 text-zinc-300 active:bg-zinc-600 border border-zinc-600"
             onClick={onClose}
             disabled={submitting}
           >

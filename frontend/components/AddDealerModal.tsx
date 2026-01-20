@@ -85,13 +85,13 @@ export default function AddDealerModal({
       }}
     >
       <div
-        className="bg-white w-full max-w-md rounded-2xl p-5 shadow-xl mx-4"
+        className="bg-zinc-900 w-full max-w-md rounded-2xl p-5 shadow-xl mx-4"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between mb-4">
-          <div className="text-lg font-bold text-black">Добавить дилера</div>
+          <div className="text-lg font-bold text-white">Добавить дилера</div>
           <button
-            className="text-zinc-600 px-3 py-2 disabled:opacity-50"
+            className="text-zinc-400 px-3 py-2 disabled:opacity-50 hover:text-white"
             onClick={onClose}
             disabled={submitting}
           >
@@ -100,7 +100,7 @@ export default function AddDealerModal({
         </div>
 
         {error && (
-          <div className="mb-3 rounded-xl bg-red-50 text-red-700 px-3 py-2 text-sm">
+          <div className="mb-3 rounded-xl bg-red-900/50 text-red-200 px-3 py-2 text-sm">
             {error}
           </div>
         )}
@@ -111,9 +111,9 @@ export default function AddDealerModal({
           <div className="text-zinc-500 text-sm mb-3">Нет доступных дилеров для добавления</div>
         ) : (
           <div className="mb-4">
-            <label className="block text-sm text-zinc-600 mb-1">Выберите дилера</label>
+            <label className="block text-sm text-zinc-400 mb-1">Выберите дилера</label>
             <select
-              className="w-full rounded-xl border border-zinc-300 bg-white text-black px-3 py-3 text-base focus:outline-none focus:ring-2 focus:ring-zinc-400"
+              className="w-full rounded-xl border border-zinc-700 bg-zinc-800 text-white px-3 py-3 text-base focus:outline-none focus:ring-2 focus:ring-zinc-500"
               value={selectedDealerId ?? ""}
               onChange={(e) => setSelectedDealerId(Number(e.target.value))}
               disabled={submitting}
@@ -129,7 +129,7 @@ export default function AddDealerModal({
 
         <div className="grid grid-cols-2 gap-2">
           <button
-            className="rounded-xl bg-zinc-100 px-4 py-3 text-zinc-700 active:bg-zinc-200"
+            className="rounded-xl bg-zinc-700 px-4 py-3 text-zinc-300 active:bg-zinc-600 border border-zinc-600"
             onClick={onClose}
             disabled={submitting}
           >

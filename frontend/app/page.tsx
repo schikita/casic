@@ -9,12 +9,13 @@ import SessionCloseConfirmationModal from "@/components/SessionCloseConfirmation
 import ReplaceDealerModal from "@/components/ReplaceDealerModal";
 import AddDealerModal from "@/components/AddDealerModal";
 import RemoveDealerModal from "@/components/RemoveDealerModal";
+import DealerRakeModal from "@/components/DealerRakeModal";
 import TopMenu from "@/components/TopMenu";
 import { RequireAuth } from "@/components/auth/RequireAuth";
 import { useAuth } from "@/components/auth/AuthContext";
 import { apiJson, getSelectedTableId, setSelectedTableId } from "@/lib/api";
 import { normalizeTableId, getErrorMessage, formatTime, calculateEarnings, formatMoney } from "@/lib/utils";
-import type { Seat, Session, Table } from "@/lib/types";
+import type { Seat, Session, Table, SessionDealerAssignment, DealerRakeEntry } from "@/lib/types";
 
 function buildOpenSessionUrl(userRole: string | undefined, tableId?: number): string {
   let url = "/api/sessions/open";
@@ -46,9 +47,11 @@ export default function HomePage() {
   const [showReplaceDealerModal, setShowReplaceDealerModal] = useState<boolean>(false);
   const [showAddDealerModal, setShowAddDealerModal] = useState<boolean>(false);
   const [removeDealerInfo, setRemoveDealerInfo] = useState<{ assignmentId: number; dealerName: string } | null>(null);
+  const [rakeModalInfo, setRakeModalInfo] = useState<{ assignmentId: number; dealerName: string; currentRake: number } | null>(null);
   const [showDealerHistory, setShowDealerHistory] = useState<boolean>(false);
   const [activeTab, setActiveTab] = useState<"table" | "dealers">("table");
   const [rake, setRake] = useState<{ total_rake: number; total_buyins: number; total_cashouts: number; total_credit: number } | null>(null);
+  const [rakeLogInfo, setRakeLogInfo] = useState<{ dealerName: string; entries: DealerRakeEntry[] } | null>(null);
 
   // Roles allowed to start sessions
   const canStartSession =
@@ -71,11 +74,21 @@ export default function HomePage() {
     setError(null);
 
     try {
-      if (user.role !== "superadmin") {
-        const tid = normalizeTableId(user.table_id);
-        setTableId(tid);
+      // Superadmin and table_admin can select from multiple tables
+      if (user.role === "superadmin" || user.role === "table_admin") {
+        const list = await apiJson<Table[]>("/api/admin/tables");
+        setTables(list);
 
-        if (!tid) {
+        const stored = getSelectedTableId();
+        const preferred =
+          stored && list.some((t) => t.id === stored)
+            ? stored
+            : list[0]?.id ?? null;
+
+        setTableId(preferred);
+        if (preferred) setSelectedTableId(preferred);
+
+        if (!preferred) {
           setSession(null);
           setSeats([]);
           setLoading(false);
@@ -84,19 +97,11 @@ export default function HomePage() {
         return;
       }
 
-      const list = await apiJson<Table[]>("/api/admin/tables");
-      setTables(list);
+      // For dealer/waiter, use their assigned table from user context
+      const tid = normalizeTableId(user.table_id);
+      setTableId(tid);
 
-      const stored = getSelectedTableId();
-      const preferred =
-        stored && list.some((t) => t.id === stored)
-          ? stored
-          : list[0]?.id ?? null;
-
-      setTableId(preferred);
-      if (preferred) setSelectedTableId(preferred);
-
-      if (!preferred) {
+      if (!tid) {
         setSession(null);
         setSeats([]);
         setLoading(false);
@@ -150,17 +155,32 @@ export default function HomePage() {
     );
   }, []);
 
-  const assignPlayer = useCallback(async (playerName: string | null) => {
+  const assignPlayer = useCallback(async (playerName: string | null, skipHistory: boolean = false) => {
+    if (!session || !activeSeatNo) return;
+    setError(null);
+    setBusy(true);
+    try {
+      const url = "/api/sessions/" + session.id + "/seats/" + activeSeatNo + (skipHistory ? "?skip_history=true" : "");
+      const updated = await apiJson<Seat>(url, {
+        method: "PUT",
+        body: JSON.stringify({ player_name: playerName }),
+      });
+      updateSeatInState(updated);
+    } catch (e) {
+      setError(getErrorMessage(e) || "Ошибка");
+    } finally {
+      setBusy(false);
+    }
+  }, [session, activeSeatNo, updateSeatInState]);
+
+  const clearSeat = useCallback(async () => {
     if (!session || !activeSeatNo) return;
     setError(null);
     setBusy(true);
     try {
       const updated = await apiJson<Seat>(
-        "/api/sessions/" + session.id + "/seats/" + activeSeatNo,
-        {
-          method: "PUT",
-          body: JSON.stringify({ player_name: playerName }),
-        }
+        "/api/sessions/" + session.id + "/seats/" + activeSeatNo + "/clear",
+        { method: "POST" }
       );
       updateSeatInState(updated);
     } catch (e) {
@@ -255,7 +275,7 @@ export default function HomePage() {
     }
   }, [session]);
 
-  const confirmCloseSession = useCallback(async (dealerRakes: Array<{ assignment_id: number; rake: number }>) => {
+  const confirmCloseSession = useCallback(async () => {
     if (!session) return;
     setError(null);
     setBusy(true);
@@ -264,7 +284,7 @@ export default function HomePage() {
         "/api/sessions/" + session.id + "/close",
         {
           method: "POST",
-          body: JSON.stringify({ dealer_rakes: dealerRakes }),
+          body: JSON.stringify({ dealer_rakes: [] }),
         }
       );
       setSession(null);
@@ -293,7 +313,7 @@ export default function HomePage() {
   }, [tableId, loadOpenSession]);
 
   const totals = useMemo(() => {
-    const chips = seats.reduce((acc, s) => acc + (s.total || 0), 0);
+    const chips = seats.reduce((acc, s) => acc + (s.total_chips_played || 0), 0);
     return { chips };
   }, [seats]);
 
@@ -340,72 +360,22 @@ export default function HomePage() {
     );
   }, [session]);
 
-  const dealerRakeGrid = useMemo(() => {
-    if (!session?.dealer_assignments || session.dealer_assignments.length === 0) {
-      return null;
-    }
-
-    const sorted = [...session.dealer_assignments].sort(
-      (a, b) => new Date(a.started_at).getTime() - new Date(b.started_at).getTime()
-    );
-
-    const dealerNames: string[] = [];
-    for (const a of sorted) {
-      if (!dealerNames.includes(a.dealer_username)) {
-        dealerNames.push(a.dealer_username);
-      }
-    }
-
-    const maxDealersToShow = 60;
-    const shownDealers = dealerNames.slice(0, maxDealersToShow);
-    const shownSet = new Set(shownDealers);
-    const hiddenDealersCount = Math.max(0, dealerNames.length - shownDealers.length);
-
-    const totalsByDealer = new Map<string, number>();
-    for (const name of shownDealers) {
-      totalsByDealer.set(name, 0);
-    }
-
-    const rows = sorted.map((a) => {
-      const rakeValue = a.rake ?? 0;
-      if (shownSet.has(a.dealer_username)) {
-        totalsByDealer.set(a.dealer_username, (totalsByDealer.get(a.dealer_username) ?? 0) + rakeValue);
-      }
-
-      return {
-        id: a.id,
-        dealer: a.dealer_username,
-        started_at: a.started_at,
-        ended_at: a.ended_at,
-        rake: rakeValue,
-      };
-    });
-
-    const grandTotal = rows.reduce((acc, r) => acc + r.rake, 0);
-    const colTotals = shownDealers.map((name) => totalsByDealer.get(name) ?? 0);
-
-    return { shownDealers, hiddenDealersCount, rows, colTotals, grandTotal };
-  }, [session]);
-
   return (
     <RequireAuth>
       <main className="p-3 max-w-md mx-auto">
         <TopMenu />
 
-        <div className="flex items-start justify-between mb-3">
-          <div>
-            <div className="text-xl font-bold text-black">Стол</div>
-            <div className="text-xs text-zinc-500">
-              {activeTable ? activeTable.name : ""}
-              {session
-                ? " • сессия " + session.date + " (" + session.status + ")"
-                : " • сессия не открыта"}
+        <div className="flex items-center justify-between mb-3 gap-3">
+          {session && (
+            <div className="rounded-xl bg-zinc-900 text-white px-3 py-3 flex-shrink-0 flex items-center gap-2">
+              <span className="text-xs text-zinc-300">Фишек на столе:</span>
+              <span className="text-base font-bold tabular-nums">{totals.chips}</span>
             </div>
-          </div>
+          )}
 
-          {user?.role === "superadmin" && (
+          {(user?.role === "superadmin" || user?.role === "table_admin") && tables.length > 0 && (
             <select
-              className="rounded-xl border border-zinc-300 bg-white text-black px-3 py-3 text-base focus:outline-none focus:ring-2 focus:ring-zinc-400"
+              className="rounded-xl border border-zinc-700 bg-zinc-800 text-white px-3 py-3 text-base focus:outline-none focus:ring-2 focus:ring-zinc-500 flex-1 min-w-0"
               value={tableId ?? ""}
               onChange={(e) => {
                 const id = Number(e.target.value);
@@ -432,15 +402,16 @@ export default function HomePage() {
         )}
 
         {loading && (
-          <div className="rounded-xl bg-zinc-100 px-3 py-3 text-sm text-zinc-600">
+          <div className="rounded-xl bg-zinc-800 px-3 py-3 text-sm text-zinc-400 border border-zinc-700">
             Загрузка…
           </div>
         )}
 
         {!loading && !tableId && (
-          <div className="rounded-xl bg-zinc-100 text-zinc-700 px-3 py-3 text-sm rounded-xl">
-            Нет доступного стола. Назначьте table_id админу стола или создайте
-            стол в админке.
+          <div className="rounded-xl bg-zinc-800 text-zinc-400 px-3 py-3 text-sm border border-zinc-700">
+            {(user?.role === "superadmin" || user?.role === "table_admin")
+              ? "Нет созданных столов. Создайте стол в админке."
+              : "Нет доступного стола. Сессия не активна для этого дилера/официанта."}
           </div>
         )}
 
@@ -455,7 +426,7 @@ export default function HomePage() {
                 Открыть сессию
               </button>
             ) : (
-              <div className="rounded-xl bg-zinc-100 px-3 py-3 text-sm text-zinc-700">
+              <div className="rounded-xl bg-zinc-800 px-3 py-3 text-sm text-zinc-400 border border-zinc-700">
                 Сессия не открыта. Обратитесь к администратору стола для открытия сессии.
               </div>
             )}
@@ -477,14 +448,14 @@ export default function HomePage() {
             {/* Tabs */}
             <div className="mb-3 grid grid-cols-2 gap-2">
               <button
-                className={`rounded-xl py-2 text-sm font-semibold border ${activeTab === "table" ? "bg-black text-white border-black" : "bg-white text-zinc-900 border-zinc-200"}`}
+                className={`rounded-xl py-2 text-sm font-semibold border ${activeTab === "table" ? "bg-white text-zinc-900 border-white" : "bg-zinc-800 text-zinc-300 border-zinc-700"}`}
                 onClick={() => setActiveTab("table")}
                 disabled={busy}
               >
                 Стол
               </button>
               <button
-                className={`rounded-xl py-2 text-sm font-semibold border ${activeTab === "dealers" ? "bg-black text-white border-black" : "bg-white text-zinc-900 border-zinc-200"}`}
+                className={`rounded-xl py-2 text-sm font-semibold border ${activeTab === "dealers" ? "bg-white text-zinc-900 border-white" : "bg-zinc-800 text-zinc-300 border-zinc-700"}`}
                 onClick={() => setActiveTab("dealers")}
                 disabled={busy}
               >
@@ -492,192 +463,60 @@ export default function HomePage() {
               </button>
             </div>
 
-            {/* Summary cards */}
-            {activeTab === "table" && (
-              <div className="mb-3 grid grid-cols-1 gap-2">
-                <div className="rounded-xl bg-zinc-900 text-white px-3 py-3">
-                  <div className="text-xs text-zinc-300">Фишек на столе</div>
-                  <div className="text-xl font-bold tabular-nums">{totals.chips}</div>
-                </div>
-              </div>
-            )}
-
-            {activeTab === "dealers" && (
-              <div className="mb-3 grid grid-cols-2 gap-2">
-                <div className="rounded-xl bg-zinc-900 text-white px-3 py-3">
-                  <div className="text-xs text-zinc-300">Фишек на столе</div>
-                  <div className="text-xl font-bold tabular-nums">{totals.chips}</div>
-                </div>
-                <div className="rounded-xl bg-zinc-900 text-white px-3 py-3">
-                  <div className="text-xs text-zinc-300">Рейк (грязный)</div>
-                  <div className="text-xl font-bold tabular-nums">{formatMoney(rake?.total_rake ?? 0)}</div>
-                  {(rake?.total_credit ?? 0) > 0 && (
-                    <div className="mt-1 text-xs text-red-200">(кредит {formatMoney(rake?.total_credit ?? 0)})</div>
-                  )}
-                </div>
-              </div>
-            )}
-
             {/* Dealers tab content */}
             {activeTab === "dealers" && (
-              <div className="mb-3 rounded-xl bg-zinc-100 p-4 border border-zinc-200">
-                {/* Rake-by-dealer table output */}
-                {dealerRakeGrid && (
-                  <div className="mb-4">
-                    <div className="text-xs font-medium text-zinc-900 mb-2">Рейк по дилерам</div>
-                    {dealerRakeGrid.hiddenDealersCount > 0 && (
-                      <div className="text-xs text-zinc-700 mb-2">
-                        Показаны первые {dealerRakeGrid.shownDealers.length} дилеров из {dealerRakeGrid.shownDealers.length + dealerRakeGrid.hiddenDealersCount}.
+              <div className="mb-3 rounded-xl bg-zinc-800 p-4 border border-zinc-700">
+                {/* Summary Totals - FIRST */}
+                <div className="mb-4 rounded-lg bg-zinc-700 text-white p-3">
+                  <div className="grid grid-cols-3 gap-2 text-xs">
+                    <div>
+                      <span className="text-zinc-400">Всего рейк:</span>
+                      <div className="text-lg font-bold tabular-nums">
+                        {formatMoney((session.dealer_assignments ?? []).reduce((sum, a) => sum + (a.rake ?? 0), 0))}
                       </div>
-                    )}
-
-                    <div className="overflow-x-auto rounded-lg border border-zinc-300 bg-white shadow-inner">
-                      <table className="min-w-max w-full text-xs border-separate border-spacing-0">
-                        <thead>
-                          <tr>
-                            <th className="sticky left-0 z-20 bg-zinc-800 text-white font-semibold px-2 py-2 text-left border-b border-zinc-300 shadow-[2px_0_4px_rgba(0,0,0,0.1)]">
-                              Время
-                            </th>
-                            {dealerRakeGrid.shownDealers.map((name) => (
-                              <th
-                                key={name}
-                                className="bg-zinc-800 text-white font-semibold px-2 py-2 text-center border-b border-zinc-300 min-w-[80px]"
-                              >
-                                {name}
-                              </th>
-                            ))}
-                            <th className="sticky right-0 z-20 bg-zinc-800 text-white font-semibold px-2 py-2 text-center border-b border-zinc-300 shadow-[-2px_0_4px_rgba(0,0,0,0.1)]">
-                              Итого
-                            </th>
-                          </tr>
-                        </thead>
-
-                        <tbody>
-                          {dealerRakeGrid.rows.map((row) => (
-                            <tr key={row.id} className="odd:bg-white even:bg-zinc-50">
-                              <td className="sticky left-0 z-10 bg-inherit px-2 py-2 text-zinc-900 border-b border-zinc-200 whitespace-nowrap shadow-[2px_0_4px_rgba(0,0,0,0.05)]">
-                                {formatTime(row.started_at)}–{row.ended_at ? formatTime(row.ended_at) : "…"}
-                              </td>
-                              {dealerRakeGrid.shownDealers.map((name) => {
-                                const v = row.dealer === name ? row.rake : 0;
-                                return (
-                                  <td
-                                    key={name}
-                                    className="px-2 py-2 text-center tabular-nums text-zinc-900 border-b border-zinc-200"
-                                  >
-                                    {v > 0 ? formatMoney(v) : ""}
-                                  </td>
-                                );
-                              })}
-                              <td className="sticky right-0 z-10 bg-inherit px-2 py-2 text-center tabular-nums font-semibold text-zinc-900 border-b border-zinc-200 shadow-[-2px_0_4px_rgba(0,0,0,0.05)]">
-                                {row.rake > 0 ? formatMoney(row.rake) : "0"}
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-
-                        <tfoot>
-                          <tr>
-                            <td className="sticky left-0 z-20 bg-zinc-800 text-white font-semibold px-2 py-2 text-left border-t border-zinc-300 whitespace-nowrap shadow-[2px_0_4px_rgba(0,0,0,0.1)]">
-                              Итого рейк
-                            </td>
-                            {dealerRakeGrid.colTotals.map((v, idx) => (
-                              <td
-                                key={dealerRakeGrid.shownDealers[idx]}
-                                className="bg-zinc-800 text-white font-semibold px-2 py-2 text-center tabular-nums border-t border-zinc-300"
-                              >
-                                {formatMoney(v)}
-                              </td>
-                            ))}
-                            <td className="sticky right-0 z-20 bg-zinc-800 text-white font-semibold px-2 py-2 text-center tabular-nums border-t border-zinc-300 shadow-[-2px_0_4px_rgba(0,0,0,0.1)]">
-                              {formatMoney(dealerRakeGrid.grandTotal)}
-                            </td>
-                          </tr>
-                          <tr>
-                            <td className="sticky left-0 z-20 bg-zinc-700 text-white font-semibold px-2 py-2 text-left whitespace-nowrap shadow-[2px_0_4px_rgba(0,0,0,0.1)]">
-                              Часы работы
-                            </td>
-                            {dealerRakeGrid.shownDealers.map((name) => {
-                              const dealerAssignments = session.dealer_assignments?.filter(a => a.dealer_username === name) || [];
-                              const totalHours = dealerAssignments.reduce((sum, a) => {
-                                // Parse timestamps as UTC by appending 'Z' if not present
-                                const startStr = a.started_at.endsWith('Z') ? a.started_at : a.started_at + 'Z';
-                                const start = new Date(startStr);
-                                const end = a.ended_at
-                                  ? new Date(a.ended_at.endsWith('Z') ? a.ended_at : a.ended_at + 'Z')
-                                  : new Date();
-                                const hours = (end.getTime() - start.getTime()) / (1000 * 60 * 60);
-                                return sum + hours;
-                              }, 0);
-                              return (
-                                <td
-                                  key={name}
-                                  className="bg-zinc-700 text-white font-semibold px-2 py-2 text-center tabular-nums"
-                                >
-                                  {totalHours.toFixed(1)} ч
-                                </td>
-                              );
-                            })}
-                            <td className="sticky right-0 z-20 bg-zinc-700 text-white font-semibold px-2 py-2 text-center tabular-nums shadow-[-2px_0_4px_rgba(0,0,0,0.1)]">
-                              —
-                            </td>
-                          </tr>
-                          <tr>
-                            <td className="sticky left-0 z-20 bg-zinc-700 text-white font-semibold px-2 py-2 text-left whitespace-nowrap shadow-[2px_0_4px_rgba(0,0,0,0.1)]">
-                              Зарплата
-                            </td>
-                            {dealerRakeGrid.shownDealers.map((name) => {
-                              const dealerAssignments = session.dealer_assignments?.filter(a => a.dealer_username === name) || [];
-                              const totalHours = dealerAssignments.reduce((sum, a) => {
-                                // Parse timestamps as UTC by appending 'Z' if not present
-                                const startStr = a.started_at.endsWith('Z') ? a.started_at : a.started_at + 'Z';
-                                const start = new Date(startStr);
-                                const end = a.ended_at
-                                  ? new Date(a.ended_at.endsWith('Z') ? a.ended_at : a.ended_at + 'Z')
-                                  : new Date();
-                                const hours = (end.getTime() - start.getTime()) / (1000 * 60 * 60);
-                                return sum + hours;
-                              }, 0);
-                              const hourlyRate = dealerAssignments[0]?.dealer_hourly_rate || 0;
-                              const salary = Math.round(totalHours * hourlyRate);
-                              return (
-                                <td
-                                  key={name}
-                                  className="bg-zinc-700 text-white font-semibold px-2 py-2 text-center tabular-nums"
-                                >
-                                  {formatMoney(salary)}
-                                </td>
-                              );
-                            })}
-                            <td className="sticky right-0 z-20 bg-zinc-700 text-white font-semibold px-2 py-2 text-center tabular-nums shadow-[-2px_0_4px_rgba(0,0,0,0.1)]">
-                              {formatMoney(
-                                dealerRakeGrid.shownDealers.reduce((sum, name) => {
-                                  const dealerAssignments = session.dealer_assignments?.filter(a => a.dealer_username === name) || [];
-                                  const totalHours = dealerAssignments.reduce((s, a) => {
-                                    // Parse timestamps as UTC by appending 'Z' if not present
-                                    const startStr = a.started_at.endsWith('Z') ? a.started_at : a.started_at + 'Z';
-                                    const start = new Date(startStr);
-                                    const end = a.ended_at
-                                      ? new Date(a.ended_at.endsWith('Z') ? a.ended_at : a.ended_at + 'Z')
-                                      : new Date();
-                                    const hours = (end.getTime() - start.getTime()) / (1000 * 60 * 60);
-                                    return s + hours;
-                                  }, 0);
-                                  const hourlyRate = dealerAssignments[0]?.dealer_hourly_rate || 0;
-                                  return sum + Math.round(totalHours * hourlyRate);
-                                }, 0)
-                              )}
-                            </td>
-                          </tr>
-                        </tfoot>
-                      </table>
+                    </div>
+                    <div>
+                      <span className="text-zinc-400">Всего часов:</span>
+                      <div className="text-lg font-bold tabular-nums">
+                        {(() => {
+                          const totalHours = (session.dealer_assignments ?? []).reduce((sum, a) => {
+                            const startStr = a.started_at.endsWith('Z') ? a.started_at : a.started_at + 'Z';
+                            const start = new Date(startStr);
+                            const end = a.ended_at
+                              ? new Date(a.ended_at.endsWith('Z') ? a.ended_at : a.ended_at + 'Z')
+                              : new Date();
+                            return sum + (end.getTime() - start.getTime()) / (1000 * 60 * 60);
+                          }, 0);
+                          return totalHours.toFixed(1) + " ч";
+                        })()}
+                      </div>
+                    </div>
+                    <div>
+                      <span className="text-zinc-400">Всего ЗП:</span>
+                      <div className="text-lg font-bold tabular-nums">
+                        {formatMoney(
+                          [...new Set((session.dealer_assignments ?? []).map(a => a.dealer_username))].reduce((sum, name) => {
+                            const assignments = (session.dealer_assignments ?? []).filter(a => a.dealer_username === name);
+                            const totalHours = assignments.reduce((s, a) => {
+                              const startStr = a.started_at.endsWith('Z') ? a.started_at : a.started_at + 'Z';
+                              const start = new Date(startStr);
+                              const end = a.ended_at
+                                ? new Date(a.ended_at.endsWith('Z') ? a.ended_at : a.ended_at + 'Z')
+                                : new Date();
+                              return s + (end.getTime() - start.getTime()) / (1000 * 60 * 60);
+                            }, 0);
+                            const hourlyRate = assignments[0]?.dealer_hourly_rate || 0;
+                            return sum + Math.round(totalHours * hourlyRate);
+                          }, 0)
+                        )}
+                      </div>
                     </div>
                   </div>
-                )}
+                </div>
 
-                {/* Active Dealers Section */}
-                <div className="mb-3">
-                  <div className="text-xs font-medium text-zinc-600 mb-2">Активные дилеры</div>
+                {/* Active Dealers Section - SECOND */}
+                <div className="mb-4">
+                  <div className="text-sm font-semibold text-white mb-2">Активные дилеры</div>
                   {session.dealer_assignments && session.dealer_assignments.filter((a) => !a.ended_at).length > 0 ? (
                     <div className="space-y-2">
                       {(() => {
@@ -690,27 +529,45 @@ export default function HomePage() {
                             : 0;
 
                           return (
-                            <div key={assignment.id} className="rounded-lg bg-white p-2 border border-zinc-200">
+                            <div key={assignment.id} className="rounded-lg bg-zinc-700 p-2 border border-zinc-600">
                               <div className="flex items-start justify-between">
                                 <div className="flex-1">
-                                  <div className="text-sm font-semibold text-zinc-900">{assignment.dealer_username}</div>
-                                  <div className="text-xs text-zinc-500">Начал: {formatTime(assignment.started_at)}</div>
+                                  <div className="text-sm font-semibold text-white">{assignment.dealer_username}</div>
+                                  <div className="text-xs text-zinc-400">Начал: {formatTime(assignment.started_at)}</div>
                                   {assignment.dealer_hourly_rate && earnings > 0 && (
-                                    <div className="text-xs text-zinc-500 mt-1">
+                                    <div className="text-xs text-zinc-400 mt-1">
                                       Заработано:{" "}
-                                      <span className="font-semibold text-green-600">{formatMoney(earnings)}</span>
+                                      <span className="font-semibold text-green-400">{formatMoney(earnings)}</span>
                                     </div>
                                   )}
+                                  {assignment.rake != null && assignment.rake > 0 && (
+                                    <button
+                                      className="text-xs text-zinc-400 mt-1 text-left hover:bg-zinc-600 rounded px-1 -mx-1"
+                                      onClick={() => setRakeLogInfo({ dealerName: assignment.dealer_username, entries: assignment.rake_entries || [] })}
+                                    >
+                                      Рейк:{" "}
+                                      <span className="font-semibold text-amber-400 underline">{formatMoney(assignment.rake)}</span>
+                                    </button>
+                                  )}
                                 </div>
-                                {(user?.role === "superadmin" || user?.role === "table_admin") && hasMultipleDealers && (
+                                <div className="flex flex-col gap-1">
                                   <button
-                                    className="ml-2 rounded-lg bg-red-600 text-white px-3 py-1 text-xs active:bg-red-700 disabled:opacity-50"
-                                    onClick={() => handleRemoveDealer(assignment.id, assignment.dealer_username)}
+                                    className="rounded-lg bg-amber-500 text-white px-3 py-1 text-xs active:bg-amber-600 disabled:opacity-50"
+                                    onClick={() => setRakeModalInfo({ assignmentId: assignment.id, dealerName: assignment.dealer_username, currentRake: assignment.rake ?? 0 })}
                                     disabled={busy}
                                   >
-                                    Завершить
+                                    Рейк
                                   </button>
-                                )}
+                                  {(user?.role === "superadmin" || user?.role === "table_admin") && hasMultipleDealers && (
+                                    <button
+                                      className="rounded-lg bg-red-600 text-white px-3 py-1 text-xs active:bg-red-700 disabled:opacity-50"
+                                      onClick={() => handleRemoveDealer(assignment.id, assignment.dealer_username)}
+                                      disabled={busy}
+                                    >
+                                      Завершить
+                                    </button>
+                                  )}
+                                </div>
                               </div>
                             </div>
                           );
@@ -722,19 +579,94 @@ export default function HomePage() {
                   )}
                 </div>
 
-                {/* Waiter Section */}
+                {/* Waiter Section - THIRD */}
                 {session.waiter && (
-                  <div className="mb-3">
-                    <div className="text-xs font-medium text-zinc-600 mb-2">Официант</div>
-                    <div className="rounded-lg bg-white p-2 border border-zinc-200">
-                      <div className="text-sm font-semibold text-zinc-900">{session.waiter.username}</div>
-                      <div className="text-xs text-zinc-500">Начал: {formatTime(session.created_at)}</div>
+                  <div className="mb-4">
+                    <div className="text-sm font-semibold text-white mb-2">Официант</div>
+                    <div className="rounded-lg bg-zinc-700 p-2 border border-zinc-600">
+                      <div className="text-sm font-semibold text-white">{session.waiter.username}</div>
+                      <div className="text-xs text-zinc-400">Начал: {formatTime(session.created_at)}</div>
                       {session.waiter.hourly_rate && waiterEarnings > 0 && (
-                        <div className="text-xs text-zinc-500 mt-1">
+                        <div className="text-xs text-zinc-400 mt-1">
                           Заработано:{" "}
-                          <span className="font-semibold text-green-600">{formatMoney(waiterEarnings)}</span>
+                          <span className="font-semibold text-green-400">{formatMoney(waiterEarnings)}</span>
                         </div>
                       )}
+                    </div>
+                  </div>
+                )}
+
+                {/* Separator between waiter and session dealers */}
+                {session.dealer_assignments && session.dealer_assignments.length > 0 && (
+                  <div className="border-t-2 border-zinc-600 my-4" />
+                )}
+
+                {/* Mobile-friendly dealer cards - Dealers per session - FOURTH */}
+                {session.dealer_assignments && session.dealer_assignments.length > 0 && (
+                  <div>
+                    <div className="text-sm font-semibold text-white mb-2">Дилеры за сессию</div>
+                    <div className="space-y-2">
+                      {(() => {
+                        // Group assignments by dealer
+                        const dealerNames = [...new Set(session.dealer_assignments.map(a => a.dealer_username))];
+                        return dealerNames.map((name) => {
+                          const assignments = session.dealer_assignments!.filter(a => a.dealer_username === name);
+                          const totalHours = assignments.reduce((sum, a) => {
+                            const startStr = a.started_at.endsWith('Z') ? a.started_at : a.started_at + 'Z';
+                            const start = new Date(startStr);
+                            const end = a.ended_at
+                              ? new Date(a.ended_at.endsWith('Z') ? a.ended_at : a.ended_at + 'Z')
+                              : new Date();
+                            const hours = (end.getTime() - start.getTime()) / (1000 * 60 * 60);
+                            return sum + hours;
+                          }, 0);
+                          const hourlyRate = assignments[0]?.dealer_hourly_rate || 0;
+                          const salary = Math.round(totalHours * hourlyRate);
+                          const totalRake = assignments.reduce((sum, a) => sum + (a.rake ?? 0), 0);
+                          const isActive = assignments.some(a => !a.ended_at);
+
+                          return (
+                            <div key={name} className={`rounded-lg p-3 border ${isActive ? 'border-green-500 bg-zinc-700' : 'border-zinc-600 bg-zinc-700'}`}>
+                              <div className="flex items-center justify-between mb-2">
+                                <div className="text-sm font-semibold text-white">{name}</div>
+                                {isActive && (
+                                  <span className="text-xs bg-green-500 text-white px-2 py-0.5 rounded-full">Активен</span>
+                                )}
+                              </div>
+                              <div className="grid grid-cols-2 gap-2 text-xs">
+                                <div>
+                                  <span className="text-zinc-500">Время:</span>
+                                  <div className="text-zinc-300">
+                                    {assignments.map((a) => (
+                                      <div key={a.id}>
+                                        {formatTime(a.started_at)}–{a.ended_at ? formatTime(a.ended_at) : "…"}
+                                      </div>
+                                    ))}
+                                  </div>
+                                </div>
+                                <div>
+                                  <span className="text-zinc-500">Часы:</span>
+                                  <div className="text-zinc-300 font-semibold">{totalHours.toFixed(1)} ч</div>
+                                </div>
+                                <button
+                                  className="text-left hover:bg-zinc-600 rounded p-1 -m-1"
+                                  onClick={() => {
+                                    const allEntries = assignments.flatMap(a => a.rake_entries || []);
+                                    setRakeLogInfo({ dealerName: name, entries: allEntries });
+                                  }}
+                                >
+                                  <span className="text-zinc-500">Рейк:</span>
+                                  <div className="text-amber-400 font-semibold underline">{formatMoney(totalRake)}</div>
+                                </button>
+                                <div>
+                                  <span className="text-zinc-500">Зарплата:</span>
+                                  <div className="text-green-400 font-semibold">{formatMoney(salary)}</div>
+                                </div>
+                              </div>
+                            </div>
+                          );
+                        });
+                      })()}
                     </div>
                   </div>
                 )}
@@ -742,7 +674,7 @@ export default function HomePage() {
                 {/* Dealer history toggle */}
                 {session.dealer_assignments && session.dealer_assignments.length > 1 && (
                   <button
-                    className="text-xs text-blue-600 underline mb-2"
+                    className="text-xs text-blue-400 underline mb-2"
                     onClick={() => setShowDealerHistory(!showDealerHistory)}
                   >
                     {showDealerHistory
@@ -753,13 +685,13 @@ export default function HomePage() {
 
                 {/* Dealer history list */}
                 {showDealerHistory && session.dealer_assignments && session.dealer_assignments.length > 0 && (
-                  <div className="mb-3 border-t border-zinc-200 pt-2">
+                  <div className="mb-3 border-t border-zinc-600 pt-2">
                     <div className="text-xs text-zinc-500 mb-1">История дилеров:</div>
                     <div className="space-y-1">
                       {session.dealer_assignments.map((assignment) => (
-                        <div key={assignment.id} className="text-xs text-zinc-700 flex justify-between">
+                        <div key={assignment.id} className="text-xs text-zinc-300 flex justify-between">
                           <span>{assignment.dealer_username}</span>
-                          <span className="text-zinc-400">
+                          <span className="text-zinc-500">
                             {formatTime(assignment.started_at)}
                             {assignment.ended_at ? ` - ${formatTime(assignment.ended_at)}` : " (текущий)"}
                           </span>
@@ -771,7 +703,7 @@ export default function HomePage() {
 
                 {/* Dealer management buttons for table_admin and superadmin */}
                 {(user?.role === "superadmin" || user?.role === "table_admin") && (
-                  <div className="grid grid-cols-2 gap-2">
+                  <div className="grid grid-cols-2 gap-2 mt-4">
                     <button
                       className="rounded-xl bg-green-600 text-white py-2 text-sm active:bg-green-700 disabled:opacity-50"
                       onClick={() => setShowAddDealerModal(true)}
@@ -796,34 +728,41 @@ export default function HomePage() {
               </div>
             )}
 
-            <div className="flex gap-2 mb-3">
-              <button
-                className="flex-1 rounded-xl px-3 py-2 bg-black text-white active:bg-zinc-800 text-sm disabled:opacity-50 hover:bg-zinc-800/90"
-                onClick={() => tableId && loadOpenSession(tableId)}
-                disabled={loading || busy}
-              >
-                Обновить
-              </button>
-
-              <button
-                className="flex-1 rounded-xl px-3 py-2 bg-zinc-100 text-black active:bg-zinc-200 text-sm disabled:opacity-50 hover:bg-zinc-200/90"
-                onClick={showCloseConfirmation}
-                disabled={busy}
-              >
-                Закрыть сессию
-              </button>
-            </div>
-
             {activeTab === "table" && (
-              <SeatGrid seats={seats} onSeatClick={(seat) => setActiveSeatNo(seat.seat_no)} />
+              <>
+                <SeatGrid seats={seats} onSeatClick={(seat) => setActiveSeatNo(seat.seat_no)} />
+
+                {/* Separator */}
+                <div className="border-t border-zinc-700 my-4" />
+
+                <div className="flex gap-2">
+                  <button
+                    className="flex-1 rounded-xl px-3 py-2 bg-white text-zinc-900 active:bg-zinc-200 text-sm disabled:opacity-50"
+                    onClick={() => tableId && loadOpenSession(tableId)}
+                    disabled={loading || busy}
+                  >
+                    Обновить
+                  </button>
+
+                  <button
+                    className="flex-1 rounded-xl px-3 py-2 bg-zinc-800 text-zinc-300 active:bg-zinc-700 text-sm disabled:opacity-50 border border-zinc-700"
+                    onClick={showCloseConfirmation}
+                    disabled={busy}
+                  >
+                    Закрыть сессию
+                  </button>
+                </div>
+              </>
             )}
 
             <SeatActionSheet
               open={activeSeatNo !== null}
               seat={activeSeat}
+              sessionId={session?.id ?? null}
               onClose={() => setActiveSeatNo(null)}
               onAssign={assignPlayer}
               onAdd={addChips}
+              onClear={clearSeat}
             />
 
             <CashConfirmationModal
@@ -844,11 +783,6 @@ export default function HomePage() {
               open={showCloseModal}
               creditAmount={creditAmount}
               creditByPlayer={creditByPlayer}
-              activeDealers={
-                session.dealer_assignments
-                  ?.filter((a) => !a.ended_at)
-                  .map((a) => ({ id: a.id, dealer_username: a.dealer_username })) || []
-              }
               onConfirm={confirmCloseSession}
               onCancel={() => setShowCloseModal(false)}
               loading={busy}
@@ -878,6 +812,90 @@ export default function HomePage() {
                 onClose={() => setRemoveDealerInfo(null)}
                 onDealerRemoved={() => tableId && loadOpenSession(tableId)}
               />
+            )}
+
+            {rakeModalInfo && (
+              <DealerRakeModal
+                open={true}
+                sessionId={session.id}
+                assignmentId={rakeModalInfo.assignmentId}
+                dealerName={rakeModalInfo.dealerName}
+                currentRake={rakeModalInfo.currentRake}
+                onClose={() => setRakeModalInfo(null)}
+                onRakeUpdated={() => {
+                  if (session?.table_id) {
+                    loadOpenSession(session.table_id);
+                  }
+                }}
+              />
+            )}
+
+            {/* Rake Log Fullscreen Overlay */}
+            {rakeLogInfo && (
+              <div className="fixed inset-0 z-50 bg-zinc-900 flex flex-col">
+                {/* Header */}
+                <div className="flex items-center justify-between p-4 border-b border-zinc-700">
+                  <div className="text-lg font-bold text-white">
+                    Рейк: {rakeLogInfo.dealerName}
+                  </div>
+                  <button
+                    className="text-zinc-400 hover:text-white text-2xl px-2"
+                    onClick={() => setRakeLogInfo(null)}
+                  >
+                    ✕
+                  </button>
+                </div>
+
+                {/* Content */}
+                <div className="flex-1 overflow-y-auto p-4">
+                  {rakeLogInfo.entries.length === 0 ? (
+                    <div className="text-zinc-500 text-center py-8">
+                      Нет записей рейка
+                    </div>
+                  ) : (
+                    <div className="space-y-2">
+                      {rakeLogInfo.entries
+                        .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+                        .map((entry) => (
+                          <div
+                            key={entry.id}
+                            className="rounded-lg bg-zinc-800 p-3 border border-zinc-700"
+                          >
+                            <div className="flex items-center justify-between">
+                              <div className="text-amber-400 font-bold text-lg">
+                                +{formatMoney(entry.amount)}
+                              </div>
+                              <div className="text-xs text-zinc-500">
+                                {formatTime(entry.created_at)}
+                              </div>
+                            </div>
+                            {entry.created_by_username && (
+                              <div className="text-xs text-zinc-500 mt-1">
+                                Добавил: {entry.created_by_username}
+                              </div>
+                            )}
+                          </div>
+                        ))}
+                    </div>
+                  )}
+                </div>
+
+                {/* Footer */}
+                <div className="p-4 border-t border-zinc-700 bg-zinc-800">
+                  <div className="flex items-center justify-between mb-3">
+                    <span className="text-zinc-400">Всего:</span>
+                    <span className="text-amber-400 font-bold text-xl">
+                      {formatMoney(rakeLogInfo.entries.reduce((sum, e) => sum + e.amount, 0))}
+                    </span>
+                  </div>
+                  <button
+                    className="w-full rounded-xl bg-zinc-700 text-white px-4 py-3 font-semibold hover:bg-zinc-600"
+                    onClick={() => setRakeLogInfo(null)}
+                  >
+                    Закрыть
+                  </button>
+                </div>
+              </div>
             )}
 
             {busy && (

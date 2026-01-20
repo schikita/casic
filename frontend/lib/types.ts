@@ -22,6 +22,13 @@ export type Staff = {
   hourly_rate: number | null;
 };
 
+export type DealerRakeEntry = {
+  id: number;
+  amount: number;
+  created_at: string;
+  created_by_username: string | null;
+};
+
 export type SessionDealerAssignment = {
   id: number;
   dealer_id: number;
@@ -30,6 +37,7 @@ export type SessionDealerAssignment = {
   started_at: string;
   ended_at: string | null;
   rake: number | null;
+  rake_entries: DealerRakeEntry[];
 };
 
 export type Session = {
@@ -53,6 +61,7 @@ export type Seat = {
   total: number;
   cash: number;
   credit: number;
+  total_chips_played: number;
 };
 
 export type ChipPurchase = {
@@ -75,4 +84,14 @@ export type CasinoBalanceAdjustment = {
   comment: string;
   created_by_user_id: number;
   created_by_username: string;
+};
+
+export type SeatHistoryEntry = {
+  type: "name_change" | "chip_adjustment" | "player_left";
+  created_at: string;
+  old_name?: string | null;
+  new_name?: string | null;
+  amount?: number | null;
+  payment_type?: "cash" | "credit" | null;
+  created_by_username?: string | null;
 };

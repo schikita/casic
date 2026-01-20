@@ -246,6 +246,18 @@ export default function SummaryPage() {
                     </span>
                   </div>
                 ))}
+                {/* Total expenses */}
+                <div className="border-t border-zinc-700 pt-2 mt-2">
+                  <div className="flex justify-between items-center">
+                    <span className="text-zinc-200 font-semibold">Всего расходов</span>
+                    <span className="text-red-400 font-bold">
+                      -{formatMoney(
+                        (data.expenses.salaries || 0) +
+                        Math.abs(data.balance_adjustments?.filter((adj) => adj.amount < 0).reduce((sum, adj) => sum + adj.amount, 0) || 0)
+                      )}
+                    </span>
+                  </div>
+                </div>
               </div>
             </div>
 

@@ -5,20 +5,23 @@ import logging
 from typing import Any, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session as DBSession, joinedload
 
 logger = logging.getLogger(__name__)
 
 from ..core.datetime_utils import to_utc, utc_now
-from ..core.deps import get_current_user, get_db, require_roles
-from ..models.db import ChipOp, ChipPurchase, Seat, Session, SessionDealerAssignment, Table, User
+from ..core.deps import get_current_user, get_db, get_owner_id_for_filter, require_roles
+from ..models.db import ChipOp, ChipPurchase, DealerRakeEntry, Seat, SeatNameChange, Session, SessionDealerAssignment, Table, User
 from ..models.schemas import (
     AddDealerIn,
     ChipCreateIn,
     CloseSessionIn,
+    DealerRakeEntryOut,
     RemoveDealerIn,
     ReplaceDealerIn,
     SeatAssignIn,
+    SeatHistoryEntryOut,
     SeatOut,
     SessionCreateIn,
     SessionDealerAssignmentOut,
@@ -45,12 +48,27 @@ def _get_seat_credit(db: DBSession, session_id: str, seat_no: int) -> int:
     return sum(int(cast(int, p.amount)) for p in credit_purchases)
 
 
+def _get_total_chips_played(db: DBSession, session_id: str, seat_no: int) -> int:
+    """Get total chips played by a seat (sum of all positive chip purchases, cash + credit)."""
+    all_purchases = (
+        db.query(ChipPurchase)
+        .filter(
+            ChipPurchase.session_id == session_id,
+            ChipPurchase.seat_no == seat_no,
+            ChipPurchase.amount > 0,
+        )
+        .all()
+    )
+    return sum(int(cast(int, p.amount)) for p in all_purchases)
+
+
 def _build_seat_out(seat: Seat, db: DBSession, session_id: str) -> SeatOut:
     """Build SeatOut response with cash/credit breakdown."""
     seat_no = int(cast(int, seat.seat_no))
     total = int(cast(int, seat.total))
     credit = _get_seat_credit(db, session_id, seat_no)
     cash = max(0, total - credit)
+    total_chips_played = _get_total_chips_played(db, session_id, seat_no)
 
     return SeatOut(
         seat_no=seat_no,
@@ -58,6 +76,7 @@ def _build_seat_out(seat: Seat, db: DBSession, session_id: str) -> SeatOut:
         total=total,
         cash=cash,
         credit=credit,
+        total_chips_played=total_chips_played,
     )
 
 
@@ -71,7 +90,7 @@ def _as_int(v, default=0):
     return int(cast(int, v))
 
 
-def _resolve_table_id(user, table_id):
+def _resolve_table_id(user, table_id, db: DBSession | None = None):
     role = _role(user)
 
     if role == "superadmin":
@@ -85,7 +104,19 @@ def _resolve_table_id(user, table_id):
             raise HTTPException(status_code=400, detail="Dealers cannot specify table_id")
         raise HTTPException(status_code=400, detail="Dealers must be assigned to a session")
 
-    # table_admin and waiter have table_id
+    if role == "table_admin":
+        # table_admin owns tables via owner_id, they must specify table_id
+        if table_id is None:
+            raise HTTPException(status_code=400, detail="table_id is required for table_admin")
+        tid = int(table_id)
+        # Verify ownership if db is provided
+        if db is not None:
+            table = db.query(Table).filter(Table.id == tid).first()
+            if not table or _as_int(table.owner_id) != _as_int(user.id):
+                raise HTTPException(status_code=403, detail="Forbidden for this table")
+        return tid
+
+    # waiter has table_id assigned
     if user.table_id is None:
         raise HTTPException(status_code=403, detail="No table assigned")
 
@@ -95,7 +126,7 @@ def _resolve_table_id(user, table_id):
     return tid
 
 
-def _require_session_access(user, session):
+def _require_session_access(user, session, db: DBSession | None = None):
     role = _role(user)
 
     if role == "superadmin":
@@ -107,94 +138,26 @@ def _require_session_access(user, session):
             raise HTTPException(status_code=403, detail="Forbidden for this session")
         return
 
-    # table_admin and waiter access based on table_id
+    if role == "table_admin":
+        # table_admin owns tables via owner_id, check if they own this session's table
+        if db is not None:
+            table = db.query(Table).filter(Table.id == session.table_id).first()
+            if not table or _as_int(table.owner_id) != _as_int(user.id):
+                raise HTTPException(status_code=403, detail="Forbidden for this table")
+        return
+
+    # waiter access based on table_id
     if user.table_id is None:
         raise HTTPException(status_code=403, detail="No table assigned")
     if _as_int(user.table_id) != _as_int(session.table_id):
         raise HTTPException(status_code=403, detail="Forbidden for this table")
 
 
-def _compute_dealer_rake_by_assignment(
-    db: DBSession,
-    session_id: str,
-    assignments: list[SessionDealerAssignment],
-    session_closed_at: dt.datetime | None,
-) -> dict[int, int]:
-    """
-    Compute casino profit (rake) attributed to each dealer assignment.
-
-    We attribute negative chip ops that are NOT linked to a ChipPurchase (i.e. not a buyin/cashout)
-    to the dealer assignment active at that moment.
-
-    If assignments overlap, each op is attributed to the assignment with the latest started_at
-    that still covers the op timestamp (prevents double-counting).
-    """
-
-    if not assignments:
-        return {}
-
-    now = utc_now()
-    session_end = session_closed_at or now
-
-    purchase_op_rows = (
-        db.query(ChipPurchase.chip_op_id)
-        .filter(ChipPurchase.session_id == session_id)
-        .all()
-    )
-    purchase_op_ids = {int(cast(int, r[0])) for r in purchase_op_rows if r and r[0] is not None}
-
-    loss_ops = (
-        db.query(ChipOp)
-        .filter(ChipOp.session_id == session_id, ChipOp.amount < 0)
-        .all()
-    )
-
-    rake_by_assignment: dict[int, int] = {int(cast(int, a.id)): 0 for a in assignments if a.id is not None}
-
-    for op in loss_ops:
-        op_id = int(cast(int, op.id))
-        if op_id in purchase_op_ids:
-            continue
-
-        op_time = to_utc(cast(dt.datetime, op.created_at))
-        best: SessionDealerAssignment | None = None
-        best_start: dt.datetime | None = None
-
-        for a in assignments:
-            if a.id is None or a.started_at is None:
-                continue
-            start = to_utc(cast(dt.datetime, a.started_at))
-            end = to_utc(cast(dt.datetime, a.ended_at)) if a.ended_at else session_end
-
-            # Ensure all datetimes are timezone-aware for comparison
-            if start.tzinfo is None:
-                start = start.replace(tzinfo=dt.timezone.utc)
-            if end.tzinfo is None:
-                end = end.replace(tzinfo=dt.timezone.utc)
-
-            if start <= op_time <= end:
-                if best is None or (best_start is not None and start > best_start) or best_start is None:
-                    best = a
-                    best_start = start
-
-        if best is None or best.id is None:
-            continue
-
-        rake_by_assignment[int(cast(int, best.id))] += abs(int(cast(int, op.amount)))
-
-    return rake_by_assignment
-
 
 def _build_session_out(session: Session, db: DBSession) -> SessionOut:
-    """Build SessionOut with dealer assignments (including computed rake per assignment)."""
+    """Build SessionOut with dealer assignments (rake from manual entries only)."""
 
     assignments = list(session.dealer_assignments or [])
-    rake_by_assignment = _compute_dealer_rake_by_assignment(
-        db=db,
-        session_id=str(cast(str, session.id)),
-        assignments=assignments,
-        session_closed_at=cast(dt.datetime, session.closed_at) if session.closed_at else None,
-    )
 
     dealer_assignments_out: list[SessionDealerAssignmentOut] = []
     for assignment in assignments:
@@ -203,6 +166,21 @@ def _build_session_out(session: Session, db: DBSession) -> SessionOut:
             dealer_hourly_rate = int(cast(int, assignment.dealer.hourly_rate)) if assignment.dealer.hourly_rate else None
 
         assignment_id = int(cast(int, assignment.id))
+        # Sum rake entries for this assignment (manual rake entries only)
+        final_rake = sum(int(cast(int, entry.amount)) for entry in (assignment.rake_entries or []))
+
+        # Build rake entries list
+        rake_entries_out = []
+        for entry in (assignment.rake_entries or []):
+            rake_entries_out.append(
+                DealerRakeEntryOut(
+                    id=int(cast(int, entry.id)),
+                    amount=int(cast(int, entry.amount)),
+                    created_at=cast(dt.datetime, entry.created_at),
+                    created_by_username=cast(str, entry.created_by.username) if entry.created_by else None,
+                )
+            )
+
         dealer_assignments_out.append(
             SessionDealerAssignmentOut(
                 id=assignment_id,
@@ -211,7 +189,8 @@ def _build_session_out(session: Session, db: DBSession) -> SessionOut:
                 dealer_hourly_rate=dealer_hourly_rate,
                 started_at=cast(dt.datetime, assignment.started_at),
                 ended_at=cast(dt.datetime, assignment.ended_at) if assignment.ended_at else None,
-                rake=rake_by_assignment.get(assignment_id, 0),
+                rake=final_rake,
+                rake_entries=rake_entries_out,
             )
         )
 
@@ -239,12 +218,17 @@ def _build_session_out(session: Session, db: DBSession) -> SessionOut:
 def get_available_dealers(
     session_id: str | None = Query(default=None),
     db: DBSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     """
     Returns dealers not currently assigned to any active (open) session.
     If session_id is provided, returns dealers available to ADD to that specific session
     (excludes dealers already in that session, but allows dealers not in any session).
+    Multi-tenancy: Only returns dealers owned by the current table_admin.
     """
+    # Multi-tenancy: get owner_id for filtering
+    owner_id = get_owner_id_for_filter(current_user)
+
     if session_id:
         # Get dealers already actively assigned to this specific session
         dealers_in_session = (
@@ -273,16 +257,15 @@ def get_available_dealers(
         # Exclude dealers in this session OR in other sessions
         excluded_ids = dealers_in_session_ids | dealers_in_other_sessions_ids
 
-        dealers = (
-            db.query(User)
-            .filter(
-                User.role == "dealer",
-                User.is_active == True,
-                User.id.notin_(excluded_ids) if excluded_ids else True,
-            )
-            .order_by(User.username.asc())
-            .all()
+        query = db.query(User).filter(
+            User.role == "dealer",
+            User.is_active == True,
+            User.id.notin_(excluded_ids) if excluded_ids else True,
         )
+        # Multi-tenancy filter
+        if owner_id is not None:
+            query = query.filter(User.owner_id == owner_id)
+        dealers = query.order_by(User.username.asc()).all()
     else:
         # Original behavior: Get IDs of dealers currently assigned to open sessions
         assigned_dealer_ids = (
@@ -293,16 +276,15 @@ def get_available_dealers(
         assigned_ids = {row[0] for row in assigned_dealer_ids if row[0] is not None}
 
         # Get all active dealers not in the assigned list
-        dealers = (
-            db.query(User)
-            .filter(
-                User.role == "dealer",
-                User.is_active == True,
-                User.id.notin_(assigned_ids) if assigned_ids else True,
-            )
-            .order_by(User.username.asc())
-            .all()
+        query = db.query(User).filter(
+            User.role == "dealer",
+            User.is_active == True,
+            User.id.notin_(assigned_ids) if assigned_ids else True,
         )
+        # Multi-tenancy filter
+        if owner_id is not None:
+            query = query.filter(User.owner_id == owner_id)
+        dealers = query.order_by(User.username.asc()).all()
     return [StaffOut.model_validate(d) for d in dealers]
 
 
@@ -313,17 +295,23 @@ def get_available_dealers(
 )
 def get_available_waiters(
     db: DBSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     """
     Returns all active waiters.
     Non-exclusive assignment: a waiter can serve multiple concurrent sessions.
+    Multi-tenancy: Only returns waiters owned by the current table_admin.
     """
-    waiters = (
-        db.query(User)
-        .filter(User.role == "waiter", User.is_active == True)
-        .order_by(User.username.asc())
-        .all()
-    )
+    # Multi-tenancy: get owner_id for filtering
+    owner_id = get_owner_id_for_filter(current_user)
+
+    query = db.query(User).filter(User.role == "waiter", User.is_active == True)
+
+    # Multi-tenancy filter
+    if owner_id is not None:
+        query = query.filter(User.owner_id == owner_id)
+
+    waiters = query.order_by(User.username.asc()).all()
     return [StaffOut.model_validate(w) for w in waiters]
 
 
@@ -347,6 +335,7 @@ def get_open_session(
                 joinedload(Session.dealer),
                 joinedload(Session.waiter),
                 joinedload(Session.dealer_assignments).joinedload(SessionDealerAssignment.dealer),
+                joinedload(Session.dealer_assignments).joinedload(SessionDealerAssignment.rake_entries),
             )
             .filter(Session.dealer_id == user.id, Session.status == "open")
             .order_by(Session.created_at.desc())
@@ -354,13 +343,14 @@ def get_open_session(
         )
     else:
         # superadmin and table_admin query by table_id
-        tid = _resolve_table_id(user, table_id)
+        tid = _resolve_table_id(user, table_id, db)
         s = (
             db.query(Session)
             .options(
                 joinedload(Session.dealer),
                 joinedload(Session.waiter),
                 joinedload(Session.dealer_assignments).joinedload(SessionDealerAssignment.dealer),
+                joinedload(Session.dealer_assignments).joinedload(SessionDealerAssignment.rake_entries),
             )
             .filter(Session.table_id == tid, Session.status == "open")
             .order_by(Session.created_at.desc())
@@ -380,7 +370,7 @@ def create_session(
     db: DBSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    tid = _resolve_table_id(user, payload.table_id)
+    tid = _resolve_table_id(user, payload.table_id, db)
     date = payload.date or dt.date.today()
 
     table = db.query(Table).filter(Table.id == tid).first()
@@ -486,7 +476,7 @@ def list_seats(
     s = db.query(Session).filter(Session.id == session_id).first()
     if not s:
         raise HTTPException(status_code=404, detail="Session not found")
-    _require_session_access(user, s)
+    _require_session_access(user, s, db)
 
     seats = (
         db.query(Seat)
@@ -507,13 +497,14 @@ def assign_player(
     session_id: str,
     seat_no: int,
     payload: SeatAssignIn,
+    skip_history: bool = False,
     db: DBSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
     s = db.query(Session).filter(Session.id == session_id).first()
     if not s:
         raise HTTPException(status_code=404, detail="Session not found")
-    _require_session_access(user, s)
+    _require_session_access(user, s, db)
 
     seat = (
         db.query(Seat)
@@ -523,10 +514,166 @@ def assign_player(
     if not seat:
         raise HTTPException(status_code=404, detail="Seat not found")
 
-    seat.player_name = cast(Any, payload.player_name)
+    old_name = seat.player_name
+    new_name = payload.player_name
+
+    # Only log if name actually changed and not skipping history
+    if not skip_history and old_name != new_name:
+        name_change = SeatNameChange(
+            session_id=cast(Any, session_id),
+            seat_no=cast(Any, seat_no),
+            old_name=cast(Any, old_name),
+            new_name=cast(Any, new_name),
+            created_by_user_id=cast(Any, user.id),
+        )
+        db.add(name_change)
+
+    seat.player_name = cast(Any, new_name)
     db.commit()
     db.refresh(seat)
     return _build_seat_out(seat, db, session_id)
+
+
+@router.post(
+    "/{session_id}/seats/{seat_no}/clear",
+    response_model=SeatOut,
+    dependencies=[Depends(require_roles("superadmin", "dealer", "table_admin"))],
+)
+def clear_seat(
+    session_id: str,
+    seat_no: int,
+    db: DBSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Clear a seat: log player leaving, reset chips and name."""
+    s = db.query(Session).filter(Session.id == session_id).first()
+    if not s:
+        raise HTTPException(status_code=404, detail="Session not found")
+    _require_session_access(user, s, db)
+
+    seat = (
+        db.query(Seat)
+        .filter(Seat.session_id == session_id, Seat.seat_no == seat_no)
+        .first()
+    )
+    if not seat:
+        raise HTTPException(status_code=404, detail="Seat not found")
+
+    old_name = seat.player_name
+
+    # Log player leaving if there was a player
+    if old_name:
+        name_change = SeatNameChange(
+            session_id=cast(Any, session_id),
+            seat_no=cast(Any, seat_no),
+            old_name=cast(Any, old_name),
+            new_name=cast(Any, None),
+            change_type=cast(Any, "player_left"),
+            created_by_user_id=cast(Any, user.id),
+        )
+        db.add(name_change)
+
+    # Delete all chip purchases for this seat (new player starts fresh)
+    db.query(ChipPurchase).filter(
+        ChipPurchase.session_id == session_id,
+        ChipPurchase.seat_no == seat_no,
+    ).delete()
+
+    # Reset seat
+    seat.player_name = cast(Any, None)
+    seat.total = cast(Any, 0)
+    db.commit()
+    db.refresh(seat)
+    return _build_seat_out(seat, db, session_id)
+
+
+@router.get(
+    "/{session_id}/seats/{seat_no}/history",
+    response_model=list[SeatHistoryEntryOut],
+    dependencies=[Depends(require_roles("superadmin", "dealer", "table_admin"))],
+)
+def get_seat_history(
+    session_id: str,
+    seat_no: int,
+    db: DBSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Get history of name changes and chip adjustments for a seat."""
+    s = db.query(Session).filter(Session.id == session_id).first()
+    if not s:
+        raise HTTPException(status_code=404, detail="Session not found")
+    _require_session_access(user, s, db)
+
+    history: list[SeatHistoryEntryOut] = []
+
+    # Get name changes
+    name_changes = (
+        db.query(SeatNameChange)
+        .options(joinedload(SeatNameChange.created_by))
+        .filter(
+            SeatNameChange.session_id == session_id,
+            SeatNameChange.seat_no == seat_no,
+        )
+        .all()
+    )
+    for nc in name_changes:
+        created_by_username = None
+        if nc.created_by is not None:
+            created_by_username = cast(str, nc.created_by.username)
+        # Use change_type from database, default to "name_change" for backward compatibility
+        entry_type = cast(str, nc.change_type) if nc.change_type else "name_change"
+        history.append(SeatHistoryEntryOut(
+            type=entry_type,
+            created_at=cast(dt.datetime, nc.created_at),
+            old_name=nc.old_name,
+            new_name=nc.new_name,
+            created_by_username=created_by_username,
+        ))
+
+    # Get chip operations with payment type from ChipPurchase
+    chip_ops = (
+        db.query(ChipOp)
+        .filter(
+            ChipOp.session_id == session_id,
+            ChipOp.seat_no == seat_no,
+        )
+        .all()
+    )
+
+    # Get all chip purchases for this seat to map chip_op_id to payment_type
+    chip_purchases = (
+        db.query(ChipPurchase)
+        .options(joinedload(ChipPurchase.created_by))
+        .filter(
+            ChipPurchase.session_id == session_id,
+            ChipPurchase.seat_no == seat_no,
+        )
+        .all()
+    )
+    purchase_by_op_id = {int(cast(int, p.chip_op_id)): p for p in chip_purchases}
+
+    for op in chip_ops:
+        op_id = int(cast(int, op.id))
+        purchase = purchase_by_op_id.get(op_id)
+        payment_type = None
+        created_by_username = None
+        if purchase:
+            payment_type = cast(str, purchase.payment_type)
+            if purchase.created_by is not None:
+                created_by_username = cast(str, purchase.created_by.username)
+
+        history.append(SeatHistoryEntryOut(
+            type="chip_adjustment",
+            created_at=cast(dt.datetime, op.created_at),
+            amount=int(cast(int, op.amount)),
+            payment_type=payment_type,
+            created_by_username=created_by_username,
+        ))
+
+    # Sort by created_at descending (newest first)
+    history.sort(key=lambda x: x.created_at, reverse=True)
+
+    return history
 
 
 @router.get(
@@ -542,7 +689,7 @@ def get_non_cash_purchases(
     s = db.query(Session).filter(Session.id == session_id).first()
     if not s:
         raise HTTPException(status_code=404, detail="Session not found")
-    _require_session_access(user, s)
+    _require_session_access(user, s, db)
 
     purchases = (
         db.query(ChipPurchase)
@@ -597,7 +744,7 @@ def get_session_rake(
     s = db.query(Session).filter(Session.id == session_id).first()
     if not s:
         raise HTTPException(status_code=404, detail="Session not found")
-    _require_session_access(user, s)
+    _require_session_access(user, s, db)
 
     # Buyins/cashouts are money movements tracked via ChipPurchase
     purchases = db.query(ChipPurchase).filter(ChipPurchase.session_id == session_id).all()
@@ -642,7 +789,7 @@ def add_chips(
     s = db.query(Session).filter(Session.id == session_id).first()
     if not s:
         raise HTTPException(status_code=404, detail="Session not found")
-    _require_session_access(user, s)
+    _require_session_access(user, s, db)
 
     seat = (
         db.query(Seat)
@@ -785,7 +932,7 @@ def undo_last(
     s = db.query(Session).filter(Session.id == session_id).first()
     if not s:
         raise HTTPException(status_code=404, detail="Session not found")
-    _require_session_access(user, s)
+    _require_session_access(user, s, db)
 
     seat = (
         db.query(Seat)
@@ -836,7 +983,7 @@ def _validate_and_get_session(db: DBSession, session_id: str, user: User) -> Ses
     if not s:
         logger.warning(f"Session {session_id} not found")
         raise HTTPException(status_code=404, detail="Session not found")
-    _require_session_access(user, s)
+    _require_session_access(user, s, db)
     logger.info(f"Session {session_id} access validated for user {user.username}")
     return s
 
@@ -1006,6 +1153,7 @@ def replace_dealer(
             joinedload(Session.dealer),
             joinedload(Session.waiter),
             joinedload(Session.dealer_assignments).joinedload(SessionDealerAssignment.dealer),
+            joinedload(Session.dealer_assignments).joinedload(SessionDealerAssignment.rake_entries),
         )
         .filter(Session.id == session_id)
         .first()
@@ -1016,7 +1164,7 @@ def replace_dealer(
     if s.status != "open":
         raise HTTPException(status_code=400, detail="Can only replace dealer in open sessions")
 
-    _require_session_access(user, s)
+    _require_session_access(user, s, db)
 
     # Validate new dealer exists and is active
     new_dealer = db.query(User).filter(
@@ -1079,6 +1227,7 @@ def replace_dealer(
             joinedload(Session.dealer),
             joinedload(Session.waiter),
             joinedload(Session.dealer_assignments).joinedload(SessionDealerAssignment.dealer),
+            joinedload(Session.dealer_assignments).joinedload(SessionDealerAssignment.rake_entries),
         )
         .filter(Session.id == session_id)
         .first()
@@ -1111,6 +1260,7 @@ def add_dealer(
             joinedload(Session.dealer),
             joinedload(Session.waiter),
             joinedload(Session.dealer_assignments).joinedload(SessionDealerAssignment.dealer),
+            joinedload(Session.dealer_assignments).joinedload(SessionDealerAssignment.rake_entries),
         )
         .filter(Session.id == session_id)
         .first()
@@ -1121,7 +1271,7 @@ def add_dealer(
     if s.status != "open":
         raise HTTPException(status_code=400, detail="Can only add dealer to open sessions")
 
-    _require_session_access(user, s)
+    _require_session_access(user, s, db)
 
     # Validate dealer exists and is active
     new_dealer = db.query(User).filter(
@@ -1186,6 +1336,7 @@ def add_dealer(
             joinedload(Session.dealer),
             joinedload(Session.waiter),
             joinedload(Session.dealer_assignments).joinedload(SessionDealerAssignment.dealer),
+            joinedload(Session.dealer_assignments).joinedload(SessionDealerAssignment.rake_entries),
         )
         .filter(Session.id == session_id)
         .first()
@@ -1218,6 +1369,7 @@ def remove_dealer(
             joinedload(Session.dealer),
             joinedload(Session.waiter),
             joinedload(Session.dealer_assignments).joinedload(SessionDealerAssignment.dealer),
+            joinedload(Session.dealer_assignments).joinedload(SessionDealerAssignment.rake_entries),
         )
         .filter(Session.id == session_id)
         .first()
@@ -1228,7 +1380,7 @@ def remove_dealer(
     if s.status != "open":
         raise HTTPException(status_code=400, detail="Can only remove dealer from open sessions")
 
-    _require_session_access(user, s)
+    _require_session_access(user, s, db)
 
     # Find the dealer assignment
     assignment = (
@@ -1287,6 +1439,7 @@ def remove_dealer(
             joinedload(Session.dealer),
             joinedload(Session.waiter),
             joinedload(Session.dealer_assignments).joinedload(SessionDealerAssignment.dealer),
+            joinedload(Session.dealer_assignments).joinedload(SessionDealerAssignment.rake_entries),
         )
         .filter(Session.id == session_id)
         .first()
@@ -1295,4 +1448,80 @@ def remove_dealer(
     logger.info(f"Dealer assignment {payload.assignment_id} ended in session {session_id}")
     return _build_session_out(s, db)
 
+
+class AddAssignmentRakeIn(BaseModel):
+    """Input schema for adding rake entry to a dealer assignment."""
+    assignment_id: int = Field(..., description="ID of the dealer assignment")
+    amount: int = Field(..., gt=0, description="Rake amount to add (must be positive)")
+
+
+@router.post(
+    "/{session_id}/update-assignment-rake",
+    response_model=SessionOut,
+    dependencies=[Depends(require_roles("superadmin", "dealer", "table_admin"))],
+)
+def add_assignment_rake(
+    session_id: str,
+    payload: AddAssignmentRakeIn,
+    db: DBSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """
+    Add a rake entry for a dealer assignment.
+    Rake is additive - each entry adds to the total for audit purposes.
+    """
+    # Get the session with eager loading
+    s = (
+        db.query(Session)
+        .options(
+            joinedload(Session.dealer),
+            joinedload(Session.waiter),
+            joinedload(Session.dealer_assignments).joinedload(SessionDealerAssignment.dealer),
+            joinedload(Session.dealer_assignments).joinedload(SessionDealerAssignment.rake_entries),
+        )
+        .filter(Session.id == session_id)
+        .first()
+    )
+    if not s:
+        raise HTTPException(status_code=404, detail="Session not found")
+    _require_session_access(user, s, db)
+
+    # Find the assignment
+    assignment = (
+        db.query(SessionDealerAssignment)
+        .filter(
+            SessionDealerAssignment.id == payload.assignment_id,
+            SessionDealerAssignment.session_id == session_id,
+        )
+        .first()
+    )
+    if not assignment:
+        raise HTTPException(status_code=404, detail="Dealer assignment not found")
+
+    # Add a new rake entry (additive, for audit)
+    rake_entry = DealerRakeEntry(
+        assignment_id=cast(Any, assignment.id),
+        amount=cast(Any, payload.amount),
+        created_by_user_id=cast(Any, user.id),
+    )
+    db.add(rake_entry)
+    db.commit()
+
+    # Reload session with all relationships including rake_entries
+    s = (
+        db.query(Session)
+        .options(
+            joinedload(Session.dealer),
+            joinedload(Session.waiter),
+            joinedload(Session.dealer_assignments)
+            .joinedload(SessionDealerAssignment.dealer),
+            joinedload(Session.dealer_assignments)
+            .joinedload(SessionDealerAssignment.rake_entries),
+        )
+        .filter(Session.id == session_id)
+        .first()
+    )
+
+    logger.info(f"Added rake entry of {payload.amount} for assignment {payload.assignment_id} in session {session_id} by user {user.id}")
+    return _build_session_out(s, db)
 

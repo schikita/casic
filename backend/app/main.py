@@ -180,6 +180,39 @@ def create_app() -> FastAPI:
                 conn.commit()
                 logger.info("Successfully added rake column to session_dealer_assignments")
 
+        # Migrate: create seat_name_changes table if missing
+        with engine.connect() as conn:
+            try:
+                conn.execute(text("SELECT id FROM seat_name_changes LIMIT 1"))
+            except Exception:
+                logger.info("Creating seat_name_changes table")
+                conn.execute(text("""
+                    CREATE TABLE seat_name_changes (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        session_id VARCHAR(36) NOT NULL,
+                        seat_no INTEGER NOT NULL,
+                        old_name VARCHAR(255),
+                        new_name VARCHAR(255),
+                        change_type VARCHAR(32) NOT NULL DEFAULT 'name_change',
+                        created_at DATETIME NOT NULL,
+                        created_by_user_id INTEGER NOT NULL,
+                        FOREIGN KEY (session_id) REFERENCES sessions(id),
+                        FOREIGN KEY (created_by_user_id) REFERENCES users(id)
+                    )
+                """))
+                conn.commit()
+                logger.info("Successfully created seat_name_changes table")
+
+        # Migrate: add change_type column to seat_name_changes if missing
+        with engine.connect() as conn:
+            try:
+                conn.execute(text("SELECT change_type FROM seat_name_changes LIMIT 1"))
+            except Exception:
+                logger.info("Adding change_type column to seat_name_changes")
+                conn.execute(text("ALTER TABLE seat_name_changes ADD COLUMN change_type VARCHAR(32) NOT NULL DEFAULT 'name_change'"))
+                conn.commit()
+                logger.info("Successfully added change_type column to seat_name_changes")
+
         # Migrate: populate session_dealer_assignments from existing sessions with dealers
         db = SessionLocal()
         try:

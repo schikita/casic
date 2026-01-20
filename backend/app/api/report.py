@@ -21,9 +21,8 @@ from openpyxl.utils import get_column_letter
 from sqlalchemy.orm import Session as DBSession, joinedload
 from sqlalchemy import func
 
-from ..core.deps import get_current_user, get_db, require_roles
-from ..models.db import CasinoBalanceAdjustment, ChipPurchase, Seat, Session, SessionDealerAssignment, Table, User, ChipOp
-from .admin import _resolve_table_id_for_user
+from ..core.deps import get_current_user, get_db, get_owner_id_for_filter, require_roles
+from ..models.db import CasinoBalanceAdjustment, ChipPurchase, DealerRakeEntry, Seat, Session, SessionDealerAssignment, Table, User, ChipOp
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
 
@@ -31,7 +30,11 @@ router = APIRouter(prefix="/api/admin", tags=["admin"])
 def _get_working_day_boundaries(date: dt.date) -> tuple[dt.datetime, dt.datetime]:
     """
     Get working day boundaries for a given calendar date.
-    Working day: 20:00 (8 PM) to 18:00 (6 PM) of next day.
+    Working day: 18:00 (6 PM) to 18:00 (6 PM) of next day.
+
+    This is a full 24-hour window that covers:
+    - 18:00-20:00: Pre-session prep time
+    - 20:00-18:00 next day: Active playing time
 
     Args:
         date: Calendar date (YYYY-MM-DD)
@@ -39,7 +42,7 @@ def _get_working_day_boundaries(date: dt.date) -> tuple[dt.datetime, dt.datetime
     Returns:
         Tuple of (start_datetime, end_datetime) in UTC
     """
-    start = dt.datetime.combine(date, dt.time(20, 0, 0))
+    start = dt.datetime.combine(date, dt.time(18, 0, 0))
     end = dt.datetime.combine(date + dt.timedelta(days=1), dt.time(18, 0, 0))
     return start, end
 
@@ -51,23 +54,23 @@ def get_preselected_date(
 ):
     """
     Get the preselected date for the daily summary page.
-    
+
     Returns the starting day of:
     1. Current working day if it's not yet finished (has open sessions)
     2. Most recent working day if current one is finished but next hasn't started
-    
-    Working day: 20:00 (8 PM) to 18:00 (6 PM) of next day.
-    
-    For table_admin: only considers sessions for their assigned table.
+
+    Working day: 18:00 (6 PM) to 18:00 (6 PM) of next day.
+
+    For table_admin: only considers sessions for tables they own.
     For superadmin: considers all sessions.
     """
-    # Resolve table_id for the user
-    table_id = _resolve_table_id_for_user(current_user)
-    
+    # Multi-tenancy: get owner_id for filtering
+    owner_id = get_owner_id_for_filter(current_user)
+
     now = dt.datetime.utcnow()
-    
+
     # Determine current working day
-    # Working day starts at 20:00 and ends at 18:00 next day
+    # Working day starts at 18:00 and ends at 18:00 next day
     # So if current time is before 18:00, we're in the working day that started yesterday
     # If current time is 18:00 or later, we're in the working day that started today
     if now.hour < 18:
@@ -76,16 +79,26 @@ def get_preselected_date(
     else:
         # 18:00 or later - we're in the working day that started today
         working_day_start = now.date()
-    
+
     # Get working day boundaries
     start_time, end_time = _get_working_day_boundaries(working_day_start)
-    
+
     # Check for open sessions in current working day
-    query = (
-        db.query(Session)
-        .filter(Session.created_at >= start_time, Session.created_at < end_time)
-        .filter(Session.table_id == table_id)
-    )
+    # Multi-tenancy: filter sessions by tables owned by this user
+    if owner_id is not None:
+        # table_admin: filter by sessions on tables they own
+        owned_table_ids = db.query(Table.id).filter(Table.owner_id == owner_id).subquery()
+        query = (
+            db.query(Session)
+            .filter(Session.created_at >= start_time, Session.created_at < end_time)
+            .filter(Session.table_id.in_(owned_table_ids))
+        )
+    else:
+        # superadmin: all sessions
+        query = (
+            db.query(Session)
+            .filter(Session.created_at >= start_time, Session.created_at < end_time)
+        )
     open_sessions = query.filter(Session.status == "open").first()
     
     if open_sessions:
@@ -104,17 +117,25 @@ def get_preselected_date(
     for days_back in range(1, 8):
         prev_day = working_day_start - dt.timedelta(days=days_back)
         prev_start, prev_end = _get_working_day_boundaries(prev_day)
-        
-        prev_sessions = (
-            db.query(Session)
-            .filter(Session.created_at >= prev_start, Session.created_at < prev_end)
-            .filter(Session.table_id == table_id)
-            .first()
-        )
-        
+
+        # Multi-tenancy: filter sessions by tables owned by this user
+        if owner_id is not None:
+            prev_sessions = (
+                db.query(Session)
+                .filter(Session.created_at >= prev_start, Session.created_at < prev_end)
+                .filter(Session.table_id.in_(owned_table_ids))
+                .first()
+            )
+        else:
+            prev_sessions = (
+                db.query(Session)
+                .filter(Session.created_at >= prev_start, Session.created_at < prev_end)
+                .first()
+            )
+
         if prev_sessions:
             return {"date": prev_day.isoformat()}
-    
+
     # No sessions found in the last 7 days, return current working day
     return {"date": working_day_start.isoformat()}
 
@@ -122,14 +143,15 @@ def get_preselected_date(
 @router.get("/day-summary")
 def get_day_summary(
     date: str = Query(..., description="Date in YYYY-MM-DD format"),
-    table_id: int | None = Query(default=None, description="Optional table_id for superadmin to specify a table"),
+    table_id: int | None = Query(default=None, description="Optional table_id to filter by specific table"),
     db: DBSession = Depends(get_db),
     current_user: User = Depends(require_roles("superadmin", "table_admin")),
 ):
     """Get day summary data (profit/loss) as JSON for mobile display.
-    
-    For table_admin: only shows data for their assigned table, excludes salaries and balance adjustments.
-    For superadmin: if table_id is provided, shows data for that table; otherwise shows all tables.
+
+    Multi-tenancy aware:
+    - table_admin: shows data for tables they own, staff they own, balance adjustments they own
+    - superadmin: shows all data (or filtered by table_id if provided)
     """
     try:
         d = dt.date.fromisoformat(date)
@@ -140,22 +162,20 @@ def get_day_summary(
     import logging
     logger = logging.getLogger(__name__)
 
-    # Resolve table_id for the user
-    resolved_table_id = _resolve_table_id_for_user(current_user, table_id)
+    # Multi-tenancy: get owner_id for filtering
+    owner_id = get_owner_id_for_filter(current_user)
+    is_table_admin = owner_id is not None
 
-    # Determine if user is table_admin
-    is_table_admin = cast(str, current_user.role) == "table_admin"
-
-    # DIAGNOSTIC LOGGING: User role and table admin status
+    # DIAGNOSTIC LOGGING: User role and multi-tenancy
     logger.info(f"=== DAY SUMMARY DIAGNOSTICS FOR {date} ===")
     logger.info(f"--- USER ROLE DIAGNOSTICS ---")
     logger.info(f"current_user.role: {current_user.role}")
+    logger.info(f"owner_id: {owner_id}")
     logger.info(f"is_table_admin: {is_table_admin}")
-    logger.info(f"resolved_table_id: {resolved_table_id}")
 
-    # Get working day boundaries (20:00 to 18:00 next day)
+    # Get working day boundaries (18:00 to 18:00 next day)
     start_time, end_time = _get_working_day_boundaries(d)
-    
+
     # DIAGNOSTIC LOGGING
     logger.info(f"Working day boundaries: {start_time.isoformat()} to {end_time.isoformat()}")
 
@@ -166,14 +186,25 @@ def get_day_summary(
             joinedload(Session.dealer),
             joinedload(Session.waiter),
             joinedload(Session.dealer_assignments).joinedload(SessionDealerAssignment.dealer),
+            joinedload(Session.dealer_assignments).joinedload(SessionDealerAssignment.rake_entries),
         )
         .filter(Session.created_at >= start_time, Session.created_at < end_time)
     )
-    
-    # Filter by table_id if provided
-    if resolved_table_id is not None:
-        sessions_query = sessions_query.filter(Session.table_id == resolved_table_id)
-    
+
+    # Multi-tenancy: filter by tables owned by user
+    if owner_id is not None:
+        owned_table_ids = db.query(Table.id).filter(Table.owner_id == owner_id).subquery()
+        sessions_query = sessions_query.filter(Session.table_id.in_(owned_table_ids))
+
+    # Additional filter by specific table_id if provided
+    if table_id is not None:
+        # Verify table ownership for table_admin
+        if owner_id is not None:
+            table = db.query(Table).filter(Table.id == table_id, Table.owner_id == owner_id).first()
+            if not table:
+                raise HTTPException(status_code=403, detail="Forbidden for this table")
+        sessions_query = sessions_query.filter(Session.table_id == table_id)
+
     sessions = sessions_query.order_by(Session.table_id.asc(), Session.created_at.asc()).all()
 
     session_ids = [cast(str, s.id) for s in sessions]
@@ -197,42 +228,28 @@ def get_day_summary(
         .all()
     ) if session_ids else []
 
-    # Fetch balance adjustments for the working day
-    # Balance adjustments are now shown to both superadmin and table_admin
-    balance_adjustments = (
+    # Fetch balance adjustments for the working day (multi-tenancy filtered)
+    balance_query = (
         db.query(CasinoBalanceAdjustment)
         .options(joinedload(CasinoBalanceAdjustment.created_by))
         .filter(CasinoBalanceAdjustment.created_at >= start_time, CasinoBalanceAdjustment.created_at < end_time)
-        .order_by(CasinoBalanceAdjustment.created_at.asc())
-        .all()
     )
+    if owner_id is not None:
+        balance_query = balance_query.filter(CasinoBalanceAdjustment.owner_id == owner_id)
+    balance_adjustments = balance_query.order_by(CasinoBalanceAdjustment.created_at.asc()).all()
 
     # DIAGNOSTIC LOGGING: Balance adjustments
     logger.info(f"--- BALANCE ADJUSTMENTS DIAGNOSTICS ---")
     logger.info(f"balance_adjustments length: {len(balance_adjustments)}")
     logger.info(f"is_table_admin: {is_table_admin}")
 
-    # Fetch staff who worked on sessions in this working day
-    # For table_admin: only staff who worked on their table's sessions
-    # For superadmin: all staff (or filtered by table_id if provided)
-    if is_table_admin:
-        # Get unique dealer and waiter IDs from the sessions
-        dealer_ids = set()
-        waiter_ids = set()
-        for s in sessions:
-            # Get all dealers from dealer_assignments
-            for assignment in s.dealer_assignments:
-                if assignment.dealer_id:
-                    dealer_ids.add(int(cast(int, assignment.dealer_id)))
-            # Get waiter from session
-            if s.waiter_id:
-                waiter_ids.add(int(cast(int, s.waiter_id)))
-
-        staff_ids = dealer_ids | waiter_ids
-        staff = db.query(User).filter(User.id.in_(staff_ids)).all() if staff_ids else []
-    else:
-        # Superadmin: get all staff
-        staff = db.query(User).filter(User.role.in_(["dealer", "waiter"])).all()
+    # Fetch staff (multi-tenancy filtered)
+    # For table_admin: only staff they own
+    # For superadmin: all staff
+    staff_query = db.query(User).filter(User.role.in_(["dealer", "waiter"]))
+    if owner_id is not None:
+        staff_query = staff_query.filter(User.owner_id == owner_id)
+    staff = staff_query.all()
 
     # DIAGNOSTIC LOGGING: Staff
     logger.info(f"--- STAFF DIAGNOSTICS ---")
@@ -313,15 +330,13 @@ def get_day_summary(
         for seat in seats:
             total_player_balance += int(cast(int, seat.total))
 
-    # Gross rake ("грязный") = sum of manually entered rake from all dealer assignments
-    # The rake is entered by table admin when:
-    # 1) A dealer is removed from the table (shift ends mid-session)
-    # 2) Session is closed (for each active dealer at that moment)
+    # Gross rake ("грязный") = sum of manually entered rake entries from all dealer assignments
+    # Rake entries are added by table admin during the session via the "Update Rake" feature
     gross_rake = 0
     for s in sessions:
         for assignment in s.dealer_assignments:
-            if assignment.rake is not None:
-                gross_rake += int(cast(int, assignment.rake))
+            for entry in (assignment.rake_entries or []):
+                gross_rake += int(cast(int, entry.amount))
 
     # Net result for the day = gross_rake - salaries + balance_adjustments_profit - balance_adjustments_expense
     net_result = gross_rake - total_salary + total_balance_adjustments_profit - total_balance_adjustments_expense
@@ -573,12 +588,15 @@ def _calculate_session_dealer_earnings(
             hourly_rate = int(cast(int, dealer.hourly_rate)) if dealer.hourly_rate else 0
             salary = round(hours * hourly_rate)
 
+            # Sum rake entries for this assignment
+            rake = sum(int(cast(int, entry.amount)) for entry in (assignment.rake_entries or []))
+
             earnings.append({
                 "dealer_name": cast(str, dealer.username),
                 "hours": hours,
                 "hourly_rate": hourly_rate,
                 "salary": salary,
-                "rake": int(cast(int, assignment.rake)) if assignment.rake is not None else 0,
+                "rake": rake,
             })
     elif session.dealer_id:
         # Fallback to legacy method for sessions without dealer_assignments
@@ -636,50 +654,65 @@ def _calculate_session_waiter_earnings(
 @router.get("/export-report")
 def export_report(
     date: str = Query(..., description="YYYY-MM-DD"),
-    table_id: int | None = Query(default=None, description="Optional table_id for superadmin to specify a table"),
+    table_id: int | None = Query(default=None, description="Optional table_id to filter by specific table"),
     db: DBSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
     """Generate comprehensive XLSX report for a specific date.
-    
-    For table_admin: only includes data for their assigned table, excludes salaries and balance adjustments.
-    For superadmin: if table_id is provided, includes data for that table; otherwise includes all tables.
+
+    Multi-tenancy aware:
+    - table_admin: includes data for tables/staff/balance adjustments they own
+    - superadmin: includes all data (or filtered by table_id if provided)
     """
     # Check user role
     role = cast(str, user.role)
     if role not in ("superadmin", "table_admin"):
         raise HTTPException(status_code=403, detail="Forbidden")
-    
-    # Determine if user is table_admin
-    is_table_admin = role == "table_admin"
-    
+
+    # Multi-tenancy: get owner_id for filtering
+    owner_id = get_owner_id_for_filter(user)
+    is_table_admin = owner_id is not None
+
     try:
         d = dt.date.fromisoformat(date)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid date format (expected YYYY-MM-DD)")
 
-    # Resolve table_id for the user
-    resolved_table_id = _resolve_table_id_for_user(user, table_id)
-
-    # Get working day boundaries (20:00 to 18:00 next day)
+    # Get working day boundaries (18:00 to 18:00 next day)
     start_time, end_time = _get_working_day_boundaries(d)
 
-    # Fetch all data for the working day
-    tables = db.query(Table).order_by(Table.id.asc()).all()
+    # Fetch tables (multi-tenancy filtered)
+    tables_query = db.query(Table)
+    if owner_id is not None:
+        tables_query = tables_query.filter(Table.owner_id == owner_id)
+    tables = tables_query.order_by(Table.id.asc()).all()
+
+    # Fetch sessions for the working day
     sessions_query = (
         db.query(Session)
         .options(
             joinedload(Session.dealer),
             joinedload(Session.waiter),
             joinedload(Session.dealer_assignments).joinedload(SessionDealerAssignment.dealer),
+            joinedload(Session.dealer_assignments).joinedload(SessionDealerAssignment.rake_entries),
         )
         .filter(Session.created_at >= start_time, Session.created_at < end_time)
     )
-    
-    # Filter by table_id if provided
-    if resolved_table_id is not None:
-        sessions_query = sessions_query.filter(Session.table_id == resolved_table_id)
-    
+
+    # Multi-tenancy: filter by tables owned by user
+    if owner_id is not None:
+        owned_table_ids = db.query(Table.id).filter(Table.owner_id == owner_id).subquery()
+        sessions_query = sessions_query.filter(Session.table_id.in_(owned_table_ids))
+
+    # Additional filter by specific table_id if provided
+    if table_id is not None:
+        # Verify table ownership for table_admin
+        if owner_id is not None:
+            table = db.query(Table).filter(Table.id == table_id, Table.owner_id == owner_id).first()
+            if not table:
+                raise HTTPException(status_code=403, detail="Forbidden for this table")
+        sessions_query = sessions_query.filter(Session.table_id == table_id)
+
     sessions = sessions_query.order_by(Session.table_id.asc(), Session.created_at.asc()).all()
 
     session_ids = [cast(str, s.id) for s in sessions]
@@ -706,20 +739,21 @@ def export_report(
         .all()
     ) if session_ids else []
 
-    # Fetch balance adjustments for the working day
-    # Note: Balance adjustments are global (not associated with any table/session),
-    # so they are shown to all users regardless of table filtering
-    # However, table_admins should not see balance adjustments
-    balance_adjustments = (
+    # Fetch balance adjustments for the working day (multi-tenancy filtered)
+    balance_query = (
         db.query(CasinoBalanceAdjustment)
         .options(joinedload(CasinoBalanceAdjustment.created_by))
         .filter(CasinoBalanceAdjustment.created_at >= start_time, CasinoBalanceAdjustment.created_at < end_time)
-        .order_by(CasinoBalanceAdjustment.created_at.asc())
-        .all()
-    ) if not is_table_admin else []
+    )
+    if owner_id is not None:
+        balance_query = balance_query.filter(CasinoBalanceAdjustment.owner_id == owner_id)
+    balance_adjustments = balance_query.order_by(CasinoBalanceAdjustment.created_at.asc()).all()
 
-    # Fetch all staff (dealers and waiters) - only for superadmin
-    staff = db.query(User).filter(User.role.in_(["dealer", "waiter"])).all() if not is_table_admin else []
+    # Fetch staff (multi-tenancy filtered)
+    staff_query = db.query(User).filter(User.role.in_(["dealer", "waiter"]))
+    if owner_id is not None:
+        staff_query = staff_query.filter(User.owner_id == owner_id)
+    staff = staff_query.all()
 
     # Create workbook
     wb = Workbook()
@@ -1230,12 +1264,12 @@ def _create_summary_sheet(
         for seat in seats:
             total_player_balance += int(cast(int, seat.total))
 
-    # Gross rake ("грязный") = sum of manually entered rake from dealer assignments
+    # Gross rake ("грязный") = sum of manually entered rake entries from dealer assignments
     gross_rake = 0
     for s in sessions:
         for assignment in s.dealer_assignments:
-            if assignment.rake is not None:
-                gross_rake += int(cast(int, assignment.rake))
+            for entry in (assignment.rake_entries or []):
+                gross_rake += int(cast(int, entry.amount))
 
     # Net result = gross rake - salaries + balance adjustments (profit/expense)
     net_result = gross_rake - total_salary + total_balance_adjustments_profit - total_balance_adjustments_expense

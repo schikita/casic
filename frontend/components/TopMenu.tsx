@@ -21,7 +21,7 @@ export default function TopMenu() {
     <>
       <div className="flex items-center justify-between mb-3">
         <button
-          className="rounded-xl px-3 py-2 bg-zinc-100 text-black active:bg-zinc-200 text-sm focus:outline-none focus:ring-2 focus:ring-zinc-400"
+          className="rounded-xl px-3 py-2 bg-zinc-800 text-white active:bg-zinc-700 text-sm focus:outline-none border border-zinc-700"
           onClick={() => setOpen(true)}
           aria-expanded={open}
           aria-controls="menu-dropdown"
@@ -34,7 +34,7 @@ export default function TopMenu() {
         </div>
 
         <button
-          className="rounded-xl px-3 py-2 bg-zinc-100 text-black active:bg-zinc-200 text-sm focus:outline-none focus:ring-2 focus:ring-zinc-400"
+          className="rounded-xl px-3 py-2 bg-zinc-800 text-white active:bg-zinc-700 text-sm focus:outline-none border border-zinc-700"
           onClick={() => {
             logout();
             router.push("/login");
@@ -55,48 +55,53 @@ export default function TopMenu() {
           aria-labelledby="menu-title"
         >
           <div
-            className="bg-white w-full rounded-t-2xl p-4 pb-6 shadow-xl"
+            className="bg-zinc-900 w-full rounded-t-2xl p-4 pb-6 shadow-xl"
             onClick={(e) => e.stopPropagation()}
           >
-            <div id="menu-title" className="text-lg font-bold text-black mb-2">Меню</div>
+            <div id="menu-title" className="text-lg font-bold text-white mb-2">Меню</div>
 
             <div className="grid gap-2">
               <button
-                className="rounded-xl bg-zinc-100 px-4 py-3 text-left text-zinc-700 focus:outline-none focus:ring-2 focus:ring-zinc-400"
+                className="rounded-xl bg-zinc-800 px-4 py-3 text-left text-zinc-300 focus:outline-none border border-zinc-700 active:bg-zinc-700"
                 onClick={() => go("/")}
               >
-                Стол
+                Игра
               </button>
 
               {canAccessAdmin && !isSuperadmin && (
                 <>
-                  <div className="text-xs text-zinc-400 mt-2 font-medium">Админка</div>
                   <button
-                    className="rounded-xl bg-zinc-100 px-4 py-3 text-left text-zinc-700 focus:outline-none focus:ring-2 focus:ring-zinc-400"
+                    className="rounded-xl bg-zinc-800 px-4 py-3 text-left text-zinc-300 focus:outline-none border border-zinc-700 active:bg-zinc-700"
                     onClick={() => go("/admin?tab=tables")}
                   >
                     Столы
                   </button>
                   <button
-                    className="rounded-xl bg-zinc-100 px-4 py-3 text-left text-zinc-700 focus:outline-none focus:ring-2 focus:ring-zinc-400"
+                    className="rounded-xl bg-zinc-800 px-4 py-3 text-left text-zinc-300 focus:outline-none border border-zinc-700 active:bg-zinc-700"
                     onClick={() => go("/admin?tab=users")}
                   >
                     Персонал
                   </button>
                   <button
-                    className="rounded-xl bg-zinc-100 px-4 py-3 text-left text-zinc-700 focus:outline-none focus:ring-2 focus:ring-zinc-400"
+                    className="rounded-xl bg-zinc-800 px-4 py-3 text-left text-zinc-300 focus:outline-none border border-zinc-700 active:bg-zinc-700"
                     onClick={() => go("/admin/sessions")}
                   >
                     Сессии
                   </button>
                   <button
-                    className="rounded-xl bg-zinc-100 px-4 py-3 text-left text-zinc-700 focus:outline-none focus:ring-2 focus:ring-zinc-400"
+                    className="rounded-xl bg-zinc-800 px-4 py-3 text-left text-zinc-300 focus:outline-none border border-zinc-700 active:bg-zinc-700"
                     onClick={() => go("/admin/summary")}
                   >
                     Итоги дня
                   </button>
                   <button
-                    className="rounded-xl bg-zinc-100 px-4 py-3 text-left text-zinc-700 focus:outline-none focus:ring-2 focus:ring-zinc-400"
+                    className="rounded-xl bg-zinc-800 px-4 py-3 text-left text-zinc-300 focus:outline-none border border-zinc-700 active:bg-zinc-700"
+                    onClick={() => go("/admin/balance-adjustments")}
+                  >
+                    Расходы
+                  </button>
+                  <button
+                    className="rounded-xl bg-zinc-800 px-4 py-3 text-left text-zinc-300 focus:outline-none border border-zinc-700 active:bg-zinc-700"
                     onClick={() => go("/admin/report")}
                   >
                     Отчёт XLSX
@@ -105,7 +110,7 @@ export default function TopMenu() {
               )}
 
               <button
-                className="rounded-xl bg-white border px-4 py-3 text-left text-zinc-500 focus:outline-none focus:ring-2 focus:ring-zinc-400"
+                className="rounded-xl bg-zinc-800 border border-zinc-600 px-4 py-3 text-left text-zinc-400 focus:outline-none active:bg-zinc-700"
                 onClick={() => setOpen(false)}
               >
                 Закрыть

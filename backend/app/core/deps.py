@@ -62,3 +62,23 @@ def require_roles(*roles: str) -> Callable[[User], User]:
         return user
 
     return _dep
+
+
+def get_owner_id_for_filter(user: User) -> int | None:
+    """
+    Get the owner_id to use for filtering queries based on user role.
+
+    - superadmin: returns None (no filtering, sees all data)
+    - table_admin: returns their own user.id (they are the owner of their casino)
+    - dealer/waiter: returns their owner_id (the table_admin who created them)
+
+    Returns:
+        owner_id for filtering, or None for superadmin (no filter needed)
+    """
+    role = cast(str, user.role)
+    if role == "superadmin":
+        return None
+    if role == "table_admin":
+        return int(cast(int, user.id))
+    # For dealer/waiter, return their owner_id
+    return int(cast(int, user.owner_id)) if user.owner_id is not None else None

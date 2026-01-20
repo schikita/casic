@@ -156,7 +156,7 @@ export default function AdminNavigation({ activeTab }: AdminNavigationProps) {
             </div>
 
             <button
-              className="mt-4 w-full rounded-xl bg-white border px-4 py-3 text-left text-zinc-500 focus:outline-none focus:ring-2 focus:ring-zinc-400"
+              className="mt-4 w-full rounded-xl bg-zinc-800 border border-zinc-700 px-4 py-3 text-left text-zinc-300 focus:outline-none"
               onClick={() => setShowMenu(false)}
             >
               Закрыть

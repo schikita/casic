@@ -64,7 +64,6 @@ function AdminPageContent() {
   const [newUsername, setNewUsername] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [newRole, setNewRole] = useState<UserRole>("dealer");
-  const [newTableId, setNewTableId] = useState<number | null>(null);
   const [newHourlyRate, setNewHourlyRate] = useState<string>("");
   
   // Initialize newRole based on available roles
@@ -88,17 +87,10 @@ function AdminPageContent() {
 
   // ------- Per-user edit drafts -------
   const [draftRole, setDraftRole] = useState<Record<number, UserRole>>({});
-  const [draftTableId, setDraftTableId] = useState<Record<number, number | null>>({});
   const [draftPassword, setDraftPassword] = useState<Record<number, string>>(
     {}
   );
   const [draftHourlyRate, setDraftHourlyRate] = useState<Record<number, string>>({});
-
-  const tablesById = useMemo(() => {
-    const m = new Map<number, Table>();
-    for (const t of tables) m.set(t.id, t);
-    return m;
-  }, [tables]);
 
   const clearNotices = useCallback(() => {
     setError(null);
@@ -112,17 +104,14 @@ function AdminPageContent() {
 
   const normalizeUserDrafts = useCallback((list: User[]) => {
     const r: Record<number, UserRole> = {};
-    const t: Record<number, number | null> = {};
     const p: Record<number, string> = {};
     const h: Record<number, string> = {};
     for (const u of list) {
       r[u.id] = u.role;
-      t[u.id] = u.table_id;
       p[u.id] = "";
       h[u.id] = u.hourly_rate !== null ? String(u.hourly_rate) : "";
     }
     setDraftRole(r);
-    setDraftTableId(t);
     setDraftPassword(p);
     setDraftHourlyRate(h);
   }, []);
@@ -281,7 +270,6 @@ function AdminPageContent() {
       return;
     }
 
-    const table_id = role === "table_admin" ? newTableId : null;
     const hourly_rate = (role === "dealer" || role === "waiter") && newHourlyRate !== ""
       ? Number(newHourlyRate)
       : null;
@@ -294,7 +282,6 @@ function AdminPageContent() {
           username,
           password: isNonEmpty(password) ? password : null,
           role,
-          table_id,
           is_active: true,
           hourly_rate,
         }),
@@ -303,7 +290,6 @@ function AdminPageContent() {
       setNewUsername("");
       setNewPassword("");
       setNewRole(availableRoles[0] as UserRole);
-      setNewTableId(null);
       setNewHourlyRate("");
 
       await loadUsersOnly();
@@ -313,23 +299,18 @@ function AdminPageContent() {
     } finally {
       setBusy(false);
     }
-  }, [clearNotices, showOk, newUsername, newPassword, newRole, newTableId, newHourlyRate, loadUsersOnly, availableRoles]);
+  }, [clearNotices, showOk, newUsername, newPassword, newRole, newHourlyRate, loadUsersOnly, availableRoles]);
 
   const saveUser = useCallback(async (userId: number) => {
     clearNotices();
 
     const role = draftRole[userId];
-    const table_id = role === "table_admin" ? draftTableId[userId] : null;
     const password = String(draftPassword[userId] ?? "");
     const hourlyRateStr = draftHourlyRate[userId] ?? "";
 
     const body: Record<string, unknown> = {
       role,
     };
-
-    if (role === "table_admin" && table_id !== undefined) {
-      body.table_id = table_id;
-    }
 
     if (role === "dealer" || role === "waiter") {
       body.hourly_rate = hourlyRateStr !== "" ? Number(hourlyRateStr) : null;
@@ -358,7 +339,7 @@ function AdminPageContent() {
     } finally {
       setBusy(false);
     }
-  }, [clearNotices, showOk, draftRole, draftTableId, draftPassword, draftHourlyRate, loadUsersOnly]);
+  }, [clearNotices, showOk, draftRole, draftPassword, draftHourlyRate, loadUsersOnly]);
 
   const setRoleForUser = useCallback((userId: number, role: UserRole) => {
     setDraftRole((prev) => ({ ...prev, [userId]: role }));
@@ -479,9 +460,17 @@ function AdminPageContent() {
 
         <div className="flex items-center justify-between mb-3">
           <div>
-            <div className="text-xl font-bold text-white">Админка</div>
+            <div className="text-xl font-bold text-white">
+              {tab === "tables" ? "Столы" : tab === "purchases" ? "Покупки" : "Персонал"}
+            </div>
             <div className="text-xs text-zinc-400">
-              {user.role === "superadmin" ? "Управление системой" : "Управление персоналом"}
+              {tab === "tables"
+                ? "Управление столами"
+                : tab === "purchases"
+                ? "История покупок"
+                : user.role === "superadmin"
+                ? "Управление системой"
+                : "Управление персоналом"}
             </div>
           </div>
 
@@ -669,25 +658,6 @@ function AdminPageContent() {
                     ))}
                 </select>
 
-                {newRole === "table_admin" && (
-                  <select
-                    className={selectDark}
-                    value={newTableId ?? ""}
-                    onChange={(e) => {
-                      setNewTableId(
-                        e.target.value === "" ? null : Number(e.target.value)
-                      );
-                    }}
-                  >
-                    <option value="">Выберите стол</option>
-                    {tables.map((t) => (
-                      <option key={t.id} value={t.id}>
-                        {t.name}
-                      </option>
-                    ))}
-                  </select>
-                )}
-
                 {(newRole === "dealer" || newRole === "waiter") && (
                   <input
                     type="number"
@@ -732,10 +702,8 @@ function AdminPageContent() {
 
                     return sortedUsers.map((u, idx) => {
                       const role = draftRole[u.id] ?? u.role;
-                      const tableId = draftTableId[u.id] ?? u.table_id;
                       const pwd = draftPassword[u.id] ?? "";
                       const hourlyRate = draftHourlyRate[u.id] ?? (u.hourly_rate !== null ? String(u.hourly_rate) : "");
-                      const table = tableId !== null ? tablesById.get(tableId) : null;
                       const showSeparator = idx === activeUsers.length && inactiveUsers.length > 0;
 
                       return (
@@ -761,11 +729,6 @@ function AdminPageContent() {
                             </div>
                             <div className="text-xs text-zinc-400">
                               Текущая роль: {roleLabel(u.role)}
-                              {u.table_id !== null && table && (
-                                <span className="ml-2">
-                                  • Стол: {table.name}
-                                </span>
-                              )}
                             </div>
 
                             <div className="grid gap-2 mt-3">
@@ -783,30 +746,6 @@ function AdminPageContent() {
                                   </option>
                                 ))}
                               </select>
-
-                              {role === "table_admin" && (
-                                <select
-                                  className={selectDark}
-                                  value={tableId ?? ""}
-                                  onChange={(e) => {
-                                    setDraftTableId((prev) => ({
-                                      ...prev,
-                                      [u.id]:
-                                        e.target.value === ""
-                                          ? null
-                                          : Number(e.target.value),
-                                    }));
-                                  }}
-                                  disabled={busy}
-                                >
-                                  <option value="">Выберите стол</option>
-                                  {tables.map((t) => (
-                                    <option key={t.id} value={t.id}>
-                                      {t.name}
-                                    </option>
-                                  ))}
-                                </select>
-                              )}
 
                               {(role === "dealer" || role === "waiter") && (
                                 <input
