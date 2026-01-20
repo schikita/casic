@@ -91,6 +91,7 @@ function AdminPageContent() {
     {}
   );
   const [draftHourlyRate, setDraftHourlyRate] = useState<Record<number, string>>({});
+  const [draftUsername, setDraftUsername] = useState<Record<number, string>>({});
 
   const clearNotices = useCallback(() => {
     setError(null);
@@ -106,14 +107,17 @@ function AdminPageContent() {
     const r: Record<number, UserRole> = {};
     const p: Record<number, string> = {};
     const h: Record<number, string> = {};
+    const u_: Record<number, string> = {};
     for (const u of list) {
       r[u.id] = u.role;
       p[u.id] = "";
       h[u.id] = u.hourly_rate !== null ? String(u.hourly_rate) : "";
+      u_[u.id] = u.username;
     }
     setDraftRole(r);
     setDraftPassword(p);
     setDraftHourlyRate(h);
+    setDraftUsername(u_);
   }, []);
 
   const loadTablesOnly = useCallback(async () => {
@@ -307,10 +311,16 @@ function AdminPageContent() {
     const role = draftRole[userId];
     const password = String(draftPassword[userId] ?? "");
     const hourlyRateStr = draftHourlyRate[userId] ?? "";
+    const username = draftUsername[userId] ?? "";
 
     const body: Record<string, unknown> = {
       role,
     };
+
+    // For superadmin editing table_admin, include username
+    if (user?.role === "superadmin" && isNonEmpty(username)) {
+      body.username = username;
+    }
 
     if (role === "dealer" || role === "waiter") {
       body.hourly_rate = hourlyRateStr !== "" ? Number(hourlyRateStr) : null;
@@ -339,7 +349,7 @@ function AdminPageContent() {
     } finally {
       setBusy(false);
     }
-  }, [clearNotices, showOk, draftRole, draftPassword, draftHourlyRate, loadUsersOnly]);
+  }, [clearNotices, showOk, user, draftRole, draftPassword, draftHourlyRate, draftUsername, loadUsersOnly]);
 
   const setRoleForUser = useCallback((userId: number, role: UserRole) => {
     setDraftRole((prev) => ({ ...prev, [userId]: role }));
@@ -461,7 +471,7 @@ function AdminPageContent() {
         <div className="flex items-center justify-between mb-3">
           <div>
             <div className="text-xl font-bold text-white">
-              {tab === "tables" ? "Столы" : tab === "purchases" ? "Покупки" : "Персонал"}
+              {tab === "tables" ? "Столы" : tab === "purchases" ? "Покупки" : user.role === "superadmin" ? "Пользователи" : "Персонал"}
             </div>
             <div className="text-xs text-zinc-400">
               {tab === "tables"
@@ -469,7 +479,7 @@ function AdminPageContent() {
                 : tab === "purchases"
                 ? "История покупок"
                 : user.role === "superadmin"
-                ? "Управление системой"
+                ? "Управление пользователями"
                 : "Управление персоналом"}
             </div>
           </div>
@@ -704,7 +714,9 @@ function AdminPageContent() {
                       const role = draftRole[u.id] ?? u.role;
                       const pwd = draftPassword[u.id] ?? "";
                       const hourlyRate = draftHourlyRate[u.id] ?? (u.hourly_rate !== null ? String(u.hourly_rate) : "");
+                      const username = draftUsername[u.id] ?? u.username;
                       const showSeparator = idx === activeUsers.length && inactiveUsers.length > 0;
+                      const isSuperadmin = user?.role === "superadmin";
 
                       return (
                         <div key={u.id}>
@@ -727,25 +739,43 @@ function AdminPageContent() {
                                 ID {u.id}
                               </span>
                             </div>
-                            <div className="text-xs text-zinc-400">
-                              Текущая роль: {roleLabel(u.role)}
-                            </div>
+                            {!isSuperadmin && (
+                              <div className="text-xs text-zinc-400">
+                                Текущая роль: {roleLabel(u.role)}
+                              </div>
+                            )}
 
                             <div className="grid gap-2 mt-3">
-                              <select
-                                className={selectDark}
-                                value={role}
-                                onChange={(e) =>
-                                  setRoleForUser(u.id, e.target.value as UserRole)
-                                }
-                                disabled={busy}
-                              >
-                                {availableRoles.map((r) => (
-                                  <option key={r} value={r}>
-                                    {roleLabel(r as UserRole)}
-                                  </option>
-                                ))}
-                              </select>
+                              {/* Superadmin: show username input, no role dropdown */}
+                              {isSuperadmin ? (
+                                <input
+                                  value={username}
+                                  onChange={(e) =>
+                                    setDraftUsername((prev) => ({
+                                      ...prev,
+                                      [u.id]: e.target.value,
+                                    }))
+                                  }
+                                  className={inputDark}
+                                  placeholder="Имя пользователя"
+                                  disabled={busy}
+                                />
+                              ) : (
+                                <select
+                                  className={selectDark}
+                                  value={role}
+                                  onChange={(e) =>
+                                    setRoleForUser(u.id, e.target.value as UserRole)
+                                  }
+                                  disabled={busy}
+                                >
+                                  {availableRoles.map((r) => (
+                                    <option key={r} value={r}>
+                                      {roleLabel(r as UserRole)}
+                                    </option>
+                                  ))}
+                                </select>
+                              )}
 
                               {(role === "dealer" || role === "waiter") && (
                                 <input
@@ -764,21 +794,19 @@ function AdminPageContent() {
                                 />
                               )}
 
-                              {role === "table_admin" && (
-                                <input
-                                  value={pwd}
-                                  onChange={(e) =>
-                                    setDraftPassword((prev) => ({
-                                      ...prev,
-                                      [u.id]: e.target.value,
-                                    }))
-                                  }
-                                  className={inputDark}
-                                  placeholder="Новый пароль *"
-                                  type="password"
-                                  disabled={busy}
-                                />
-                              )}
+                              <input
+                                value={pwd}
+                                onChange={(e) =>
+                                  setDraftPassword((prev) => ({
+                                    ...prev,
+                                    [u.id]: e.target.value,
+                                  }))
+                                }
+                                className={inputDark}
+                                placeholder="Новый пароль"
+                                type="password"
+                                disabled={busy}
+                              />
 
                               <div className="flex gap-2">
                                 <button

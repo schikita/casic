@@ -61,12 +61,23 @@ export default function TopMenu() {
             <div id="menu-title" className="text-lg font-bold text-white mb-2">Меню</div>
 
             <div className="grid gap-2">
-              <button
-                className="rounded-xl bg-zinc-800 px-4 py-3 text-left text-zinc-300 focus:outline-none border border-zinc-700 active:bg-zinc-700"
-                onClick={() => go("/")}
-              >
-                Игра
-              </button>
+              {!isSuperadmin && (
+                <button
+                  className="rounded-xl bg-zinc-800 px-4 py-3 text-left text-zinc-300 focus:outline-none border border-zinc-700 active:bg-zinc-700"
+                  onClick={() => go("/")}
+                >
+                  Игра
+                </button>
+              )}
+
+              {isSuperadmin && (
+                <button
+                  className="rounded-xl bg-zinc-800 px-4 py-3 text-left text-zinc-300 focus:outline-none border border-zinc-700 active:bg-zinc-700"
+                  onClick={() => go("/admin?tab=users")}
+                >
+                  Пользователи
+                </button>
+              )}
 
               {canAccessAdmin && !isSuperadmin && (
                 <>

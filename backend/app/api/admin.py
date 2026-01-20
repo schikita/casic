@@ -186,8 +186,11 @@ def list_users(db: DBSession = Depends(get_db), current_user: User = Depends(get
     role = cast(str, current_user.role)
 
     if role == "superadmin":
-        # Superadmin sees all users except their own account
-        users = db.query(User).filter(User.id != current_user.id).order_by(User.id.asc()).all()
+        # Superadmin sees only table_admin users (not themselves, not dealers/waiters)
+        users = db.query(User).filter(
+            User.id != current_user.id,
+            User.role == "table_admin"
+        ).order_by(User.id.asc()).all()
     else:
         # Table admin only sees dealer and waiter users that they own (multi-tenancy)
         owner_id = get_owner_id_for_filter(current_user)
@@ -319,6 +322,16 @@ def update_user(user_id: int, payload: UserUpdateIn, db: DBSession = Depends(get
             raise HTTPException(status_code=403, detail="Table admin can only update dealer and waiter users")
     else:
         raise HTTPException(status_code=403, detail="Forbidden")
+
+    # Update username if provided (superadmin only can update table_admin usernames)
+    if payload.username is not None:
+        new_username = _normalize_username(payload.username)
+        if new_username != u.username:
+            # Check if username is already taken
+            existing = db.query(User).filter(User.username == new_username, User.id != user_id).first()
+            if existing:
+                raise HTTPException(status_code=400, detail="Имя пользователя уже занято")
+            u.username = cast(Any, new_username)
 
     # Update role if provided
     if payload.role is not None:

@@ -45,6 +45,7 @@ class UserCreateIn(BaseModel):
 
 
 class UserUpdateIn(BaseModel):
+    username: str | None = Field(default=None, min_length=1, max_length=64)
     password: str | None = Field(default=None, min_length=4, max_length=128)
     role: UserRole | None = None
     table_id: int | None = None
