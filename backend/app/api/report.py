@@ -15,14 +15,14 @@ from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
-from openpyxl import Workbook
+from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 from sqlalchemy.orm import Session as DBSession, joinedload
 from sqlalchemy import func
 
 from ..core.deps import get_current_user, get_db, get_owner_id_for_filter, require_roles
-from ..models.db import CasinoBalanceAdjustment, ChipPurchase, DealerRakeEntry, Seat, Session, SessionDealerAssignment, Table, User, ChipOp
+from ..models.db import CasinoBalanceAdjustment, ChipPurchase, DealerRakeEntry, Seat, SeatNameChange, Session, SessionDealerAssignment, Table, User, ChipOp
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
 
@@ -420,6 +420,8 @@ THIN_BORDER = Border(
 )
 
 
+
+
 def _style_header(ws, row: int, cols: int):
     """Apply header styling to a row."""
     for col in range(1, cols + 1):
@@ -755,26 +757,18 @@ def export_report(
         staff_query = staff_query.filter(User.owner_id == owner_id)
     staff = staff_query.all()
 
-    # Create workbook
-    wb = Workbook()
-    wb.remove(wb.active)  # Remove default sheet
+    # Load template.xlsx and fill it with data
+    import os
+    template_path = os.path.join(os.path.dirname(__file__), "..", "..", "template.xlsx")
+    if not os.path.exists(template_path):
+        # Fallback for Docker container
+        template_path = "/app/template.xlsx"
 
-    # Sheet 1: Table States (per-seat summary for each table)
-    _create_table_states_sheet(wb, tables, sessions, seats_by_session, db)
+    wb = load_workbook(template_path)
+    ws = wb.active
 
-    # Sheet 2: Chip Purchase Chronology
-    _create_purchases_sheet(wb, purchases, tables, db)
-
-    # Sheet 3: Staff Salaries (only for superadmin)
-    if not is_table_admin:
-        _create_staff_sheet(wb, sessions, staff, d)
-
-    # Sheet 4: Balance Adjustments (only for superadmin)
-    if not is_table_admin:
-        _create_balance_adjustments_sheet(wb, balance_adjustments, d)
-
-    # Sheet 5: Summary (Profit/Expense)
-    _create_summary_sheet(wb, sessions, seats_by_session, purchases, staff, balance_adjustments, d, is_table_admin)
+    # Fill template with data
+    _fill_template_with_data(ws, sessions, seats_by_session, purchases, balance_adjustments, staff, d, db)
 
     # Generate file
     output = io.BytesIO()
@@ -796,6 +790,173 @@ def export_report(
         headers=headers,
     )
 
+
+def _fill_template_with_data(
+    ws,
+    sessions: list[Session],
+    seats_by_session: dict[str, list[Seat]],
+    purchases: list[ChipPurchase],
+    balance_adjustments: list[CasinoBalanceAdjustment],
+    staff: list[User],
+    report_date: dt.date,
+    db: DBSession,
+):
+    """
+    Fill the template.xlsx with actual data.
+
+    Template structure (using rows 1-22 for max 10 seats):
+    - Row 1: Seat number headers (we fill № 1 through № 10 in columns C,E,G,I,K,M,O,Q,S,U)
+    - Rows 2-15: Player name + chip purchases (even cols B,D,F,H,J,L,N,P,R,T = values)
+    - Rows 16-21: Summary rows (Жетоны(-), Жетоны(+), Результат, etc.)
+
+    - Rows 47-89: Staff section
+      - Columns A-F: Dealer blocks (2 cols per dealer: rake amount, time) - only for actual dealers
+      - Columns H-L: Waiter salaries (I=rate per row 49)
+      - Row 87: Totals
+
+    - Cell V63: "Яхцанут" label, W63: balance adjustment value
+    """
+    if not sessions:
+        return  # Leave template as-is if no data
+
+    # Collect all chip purchases grouped by seat
+    purchases_by_seat: dict[int, list[ChipPurchase]] = {}
+    for p in purchases:
+        seat_no = int(cast(int, p.seat_no))
+        if seat_no not in purchases_by_seat:
+            purchases_by_seat[seat_no] = []
+        purchases_by_seat[seat_no].append(p)
+
+    # Sort purchases by time
+    for seat_no in purchases_by_seat:
+        purchases_by_seat[seat_no].sort(key=lambda p: cast(dt.datetime, p.created_at))
+
+    # Get current player names by seat
+    player_by_seat: dict[int, str] = {}
+    for session in sessions:
+        session_id = cast(str, session.id)
+        seats = seats_by_session.get(session_id, [])
+        for seat in seats:
+            seat_no = int(cast(int, seat.seat_no))
+            if seat.player_name:
+                player_by_seat[seat_no] = cast(str, seat.player_name)
+
+    # === SECTION 1: Seats 1-10 (rows 1-22) ===
+    # Template has headers at row 1: C1=№13, E1=№14, etc.
+    # We repurpose for seats 1-10: C1=№1, E1=№2, G1=№3, etc.
+    # Value columns: B, D, F, H, J, L, N, P, R, T (for seats 1-10)
+    # Time columns: C, E, G, I, K, M, O, Q, S, U
+    SEAT_SECTION_DATA_START_ROW = 2   # Player name + purchases start at row 2
+    SEAT_SECTION_DATA_END_ROW = 15    # Up to row 15
+    MAX_SEATS = 10
+
+    for seat_no in range(1, MAX_SEATS + 1):
+        # Column B=2 for seat 1, D=4 for seat 2, etc.
+        col_value = 2 + (seat_no - 1) * 2  # B=2, D=4, F=6, H=8, J=10, L=12, N=14, P=16, R=18, T=20
+        col_time = col_value + 1            # C=3, E=5, G=7, I=9, K=11, M=13, O=15, Q=17, S=19, U=21
+
+        # Update seat header in row 1 (template has № 13, № 14, etc. - change to № 1, № 2, etc.)
+        ws.cell(row=1, column=col_time, value=f"№ {seat_no}")
+
+        # Fill player name in first data row (row 2)
+        player_name = player_by_seat.get(seat_no, "")
+        if player_name:
+            ws.cell(row=SEAT_SECTION_DATA_START_ROW, column=col_value, value=player_name)
+
+        # Fill chip purchases (rows 3-15)
+        seat_purchases = purchases_by_seat.get(seat_no, [])
+        for i, p in enumerate(seat_purchases):
+            row = SEAT_SECTION_DATA_START_ROW + 1 + i  # Start at row 3
+            if row > SEAT_SECTION_DATA_END_ROW:
+                break
+
+            amount = int(cast(int, p.amount))
+            # Display as negative (chip purchase = player bought chips)
+            display_amount = -abs(amount) if amount > 0 else amount
+            ws.cell(row=row, column=col_value, value=display_amount)
+
+            # Timestamp
+            time_str = cast(dt.datetime, p.created_at).strftime("%H:%M")
+            ws.cell(row=row, column=col_time, value=time_str)
+
+    # Clear unused seat columns (seats 11-12 in template)
+    for seat_no in range(11, 13):
+        col_value = 2 + (seat_no - 1) * 2
+        col_time = col_value + 1
+        ws.cell(row=1, column=col_time, value=None)  # Clear header
+
+    # === SECTION: Dealer rake entries (rows 47-86) ===
+    # Collect all dealers from sessions
+    dealers_with_rake: dict[int, list[DealerRakeEntry]] = {}
+    dealer_names: dict[int, str] = {}
+
+    for session in sessions:
+        for assignment in session.dealer_assignments:
+            dealer_id = int(cast(int, assignment.dealer_id))
+            if assignment.dealer:
+                dealer_names[dealer_id] = cast(str, assignment.dealer.username)
+            if dealer_id not in dealers_with_rake:
+                dealers_with_rake[dealer_id] = []
+            for entry in (assignment.rake_entries or []):
+                dealers_with_rake[dealer_id].append(entry)
+
+    # Sort dealers by ID
+    sorted_dealer_ids = sorted(dealers_with_rake.keys())
+    num_dealers = len(sorted_dealer_ids)
+
+    DEALER_SECTION_START_ROW = 47
+    DEALER_HEADER_ROW = 48
+    DEALER_DATA_START_ROW = 49
+    DEALER_DATA_END_ROW = 86
+
+    # Fill dealer names (row 47), headers (row 48), and rake entries (rows 49-86)
+    for idx, dealer_id in enumerate(sorted_dealer_ids):
+        col_rake = 1 + idx * 2   # A=1, C=3, E=5, ...
+        col_time = col_rake + 1  # B=2, D=4, F=6, ...
+
+        # Dealer name in row 47
+        dealer_name = dealer_names.get(dealer_id, f"D{idx+1}")
+        ws.cell(row=DEALER_SECTION_START_ROW, column=col_rake, value=dealer_name)
+
+        # Headers in row 48
+        ws.cell(row=DEALER_HEADER_ROW, column=col_rake, value="Рейк")
+        ws.cell(row=DEALER_HEADER_ROW, column=col_time, value="Время")
+
+        # Rake entries
+        rake_entries = sorted(dealers_with_rake[dealer_id], key=lambda e: cast(dt.datetime, e.created_at))
+        for i, entry in enumerate(rake_entries):
+            row = DEALER_DATA_START_ROW + i
+            if row > DEALER_DATA_END_ROW:
+                break
+            ws.cell(row=row, column=col_rake, value=int(cast(int, entry.amount)))
+            time_str = cast(dt.datetime, entry.created_at).strftime("%H:%M")
+            ws.cell(row=row, column=col_time, value=time_str)
+
+    # Clear unused dealer columns (template has D1, D2, D3 - clear extras if fewer dealers)
+    for idx in range(num_dealers, 3):
+        col_rake = 1 + idx * 2
+        col_time = col_rake + 1
+        ws.cell(row=DEALER_SECTION_START_ROW, column=col_rake, value=None)
+        ws.cell(row=DEALER_HEADER_ROW, column=col_rake, value=None)
+        ws.cell(row=DEALER_HEADER_ROW, column=col_time, value=None)
+
+    # === SECTION: Waiter salaries (columns H-L, row 49 for rates) ===
+    # Template: I48="официантка", I49/J49/K49/L49 = hourly rates
+    # Find waiters from staff list
+    waiters = [s for s in staff if s.role == "waiter"]
+
+    # Fill waiter rates in row 49 (columns I, J, K, L = 9, 10, 11, 12)
+    for idx, waiter in enumerate(waiters):
+        if idx >= 4:  # Max 4 waiter columns (I, J, K, L)
+            break
+        col = 9 + idx  # I=9, J=10, K=11, L=12
+        hourly_rate = int(cast(int, waiter.hourly_rate)) if waiter.hourly_rate else 0
+        ws.cell(row=49, column=col, value=hourly_rate)
+
+    # === Balance adjustments (Яхцанут) - Cell W63 ===
+    total_adjustments = sum(int(cast(int, ba.amount)) for ba in balance_adjustments)
+    if total_adjustments != 0:
+        ws.cell(row=63, column=23, value=total_adjustments)  # W63
 
 
 def _create_table_states_sheet(
