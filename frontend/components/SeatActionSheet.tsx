@@ -289,26 +289,46 @@ export default function SeatActionSheet({
             <input
               inputMode="numeric"
               value={customAmount}
-              onChange={(e) => setCustomAmount(e.target.value)}
+              onChange={(e) => {
+                // Only allow positive numbers
+                const value = e.target.value;
+                if (value === "" || (/^\d+$/.test(value) && parseInt(value, 10) >= 0)) {
+                  setCustomAmount(value);
+                }
+              }}
               disabled={!hasPlayerName}
               className={[
                 "flex-1 rounded-xl border border-zinc-700 bg-zinc-800 text-white px-3 py-3 text-base focus:outline-none focus:ring-2 focus:ring-zinc-500 placeholder-zinc-500",
                 !hasPlayerName ? "opacity-50" : "",
               ].join(" ")}
-              placeholder="например: 2500 или -2500"
+              placeholder="например: 2500"
             />
+          </div>
+          <div className="flex gap-2 mt-2">
             <button
-              className="rounded-xl bg-blue-600 text-white px-4 py-3 font-semibold active:bg-blue-700 disabled:opacity-60 focus:outline-none"
-              disabled={!hasPlayerName || !parsedCustom || !isMinusAmountValid(parsedCustom)}
+              className="flex-1 rounded-xl bg-green-600 text-white py-3 font-semibold active:bg-green-700 disabled:opacity-60 focus:outline-none"
+              disabled={!hasPlayerName || !parsedCustom}
               onClick={async () => {
-                if (!hasPlayerName || !parsedCustom || !isMinusAmountValid(parsedCustom)) return;
+                if (!hasPlayerName || !parsedCustom) return;
                 await saveNameIfChanged();
                 onAdd(parsedCustom);
                 setCustomAmount("");
-                if (parsedCustom < 0) onClose();
               }}
             >
-              Применить
+              +
+            </button>
+            <button
+              className="flex-1 rounded-xl bg-red-600 text-white py-3 font-semibold active:bg-red-700 disabled:opacity-60 focus:outline-none"
+              disabled={!hasPlayerName || !parsedCustom || playerChips - parsedCustom < 0}
+              onClick={async () => {
+                if (!hasPlayerName || !parsedCustom || playerChips - parsedCustom < 0) return;
+                await saveNameIfChanged();
+                onAdd(-parsedCustom);
+                setCustomAmount("");
+                onClose();
+              }}
+            >
+              -
             </button>
           </div>
           {!hasPlayerName && (
@@ -316,7 +336,7 @@ export default function SeatActionSheet({
               Сначала введите имя игрока
             </div>
           )}
-          {hasPlayerName && parsedCustom < 0 && playerChips + parsedCustom < 0 && (
+          {hasPlayerName && parsedCustom > 0 && playerChips - parsedCustom < 0 && (
             <div className="text-xs text-red-400 mt-1">
               Нельзя снять больше {playerChips} фишек
             </div>

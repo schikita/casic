@@ -58,7 +58,7 @@ function AdminPageContent() {
 
   // ------- Tables create form -------
   const [tableName, setTableName] = useState("");
-  const [tableSeats, setTableSeats] = useState<number>(DEFAULT_SEATS_COUNT);
+  const [tableSeats, setTableSeats] = useState<string>(String(DEFAULT_SEATS_COUNT));
 
   // ------- Users create form -------
   const [newUsername, setNewUsername] = useState("");
@@ -80,7 +80,7 @@ function AdminPageContent() {
   // ------- Table edit form -------
   const [editingTableId, setEditingTableId] = useState<number | null>(null);
   const [editTableName, setEditTableName] = useState("");
-  const [editTableSeats, setEditTableSeats] = useState<number>(DEFAULT_SEATS_COUNT);
+  const [editTableSeats, setEditTableSeats] = useState<string>(String(DEFAULT_SEATS_COUNT));
 
   // ------- Purchases controls -------
   const [purchaseLimit, setPurchaseLimit] = useState<number>(DEFAULT_PURCHASE_LIMIT);
@@ -232,7 +232,7 @@ function AdminPageContent() {
       });
 
       setTableName("");
-      setTableSeats(DEFAULT_SEATS_COUNT);
+      setTableSeats(String(DEFAULT_SEATS_COUNT));
       await loadTablesOnly();
       showOk("Стол создан");
     } catch (e) {
@@ -394,7 +394,7 @@ function AdminPageContent() {
     clearNotices();
     
     const name = editTableName.trim();
-    const seats = editTableSeats;
+    const seats = toInt(editTableSeats, DEFAULT_SEATS_COUNT);
     
     if (!isNonEmpty(name)) {
       setError("Введите название стола");
@@ -414,7 +414,7 @@ function AdminPageContent() {
       
       setEditingTableId(null);
       setEditTableName("");
-      setEditTableSeats(DEFAULT_SEATS_COUNT);
+      setEditTableSeats(String(DEFAULT_SEATS_COUNT));
       await loadTablesOnly();
       showOk("Стол обновлён");
     } catch (e) {
@@ -427,13 +427,13 @@ function AdminPageContent() {
   const startEditingTable = useCallback((table: Table) => {
     setEditingTableId(table.id);
     setEditTableName(table.name);
-    setEditTableSeats(table.seats_count);
+    setEditTableSeats(String(table.seats_count));
   }, []);
 
   const cancelEditingTable = useCallback(() => {
     setEditingTableId(null);
     setEditTableName("");
-    setEditTableSeats(DEFAULT_SEATS_COUNT);
+    setEditTableSeats(String(DEFAULT_SEATS_COUNT));
   }, []);
 
   const refreshCurrentTab = useCallback(() => {
@@ -521,7 +521,7 @@ function AdminPageContent() {
                 <input
                   type="number"
                   value={tableSeats}
-                  onChange={(e) => setTableSeats(Number(e.target.value))}
+                  onChange={(e) => setTableSeats(e.target.value === '' ? '' : e.target.value)}
                   className={inputDark}
                   placeholder="Мест"
                   min={MIN_SEATS_COUNT}
@@ -568,7 +568,7 @@ function AdminPageContent() {
                             <input
                               type="number"
                               value={editTableSeats}
-                              onChange={(e) => setEditTableSeats(Number(e.target.value))}
+                              onChange={(e) => setEditTableSeats(e.target.value === '' ? '' : e.target.value)}
                               className={inputDark}
                               placeholder="Мест"
                               min={MIN_SEATS_COUNT}
