@@ -41,11 +41,13 @@ export default function BalanceAdjustmentsPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showAddForm, setShowAddForm] = useState(false);
-  
+
   // Form state
   const [amount, setAmount] = useState("");
   const [comment, setComment] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const [deleteConfirm, setDeleteConfirm] = useState<number | null>(null);
+  const [deleting, setDeleting] = useState(false);
 
   async function loadAdjustments() {
     setLoading(true);
@@ -107,6 +109,28 @@ export default function BalanceAdjustmentsPage() {
       setError((e as Error)?.message ?? "Ошибка");
     } finally {
       setSubmitting(false);
+    }
+  }
+
+  async function handleDelete(id: number) {
+    setDeleting(true);
+    setError(null);
+    try {
+      const res = await apiFetch(`/api/admin/balance-adjustments/${id}`, {
+        method: "DELETE",
+      });
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || "Ошибка удаления");
+      }
+
+      setDeleteConfirm(null);
+      await loadAdjustments();
+    } catch (e: unknown) {
+      setError((e as Error)?.message ?? "Ошибка");
+    } finally {
+      setDeleting(false);
     }
   }
 
@@ -269,18 +293,63 @@ export default function BalanceAdjustmentsPage() {
                     {adj.created_by_username}
                   </div>
                 </div>
-                <div
-                  className={`text-lg font-bold ${
-                    adj.amount > 0 ? "text-green-400" : "text-red-400"
-                  }`}
-                >
-                  {adj.amount > 0 ? "+" : ""}
-                  {formatMoney(adj.amount)} ₪
+                <div className="flex items-center gap-3">
+                  <div
+                    className={`text-lg font-bold ${
+                      adj.amount > 0 ? "text-green-400" : "text-red-400"
+                    }`}
+                  >
+                    {adj.amount > 0 ? "+" : ""}
+                    {formatMoney(adj.amount)} ₪
+                  </div>
+                  <button
+                    onClick={() => setDeleteConfirm(adj.id)}
+                    className="rounded-lg bg-red-600 text-white px-3 py-1 text-xs active:bg-red-700 disabled:opacity-50 hover:bg-red-700/90 focus:outline-none focus:ring-2 focus:ring-white/15"
+                    disabled={deleting}
+                  >
+                    Удалить
+                  </button>
                 </div>
               </div>
             </div>
           ))}
         </div>
+
+        {/* Delete confirmation modal */}
+        {deleteConfirm !== null && (
+          <div
+            className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center"
+            onClick={() => !deleting && setDeleteConfirm(null)}
+          >
+            <div
+              className="bg-zinc-900 w-full max-w-md rounded-2xl p-5 shadow-xl mx-4"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="text-lg font-bold text-white mb-4">
+                Удалить корректировку?
+              </div>
+              <div className="text-sm text-zinc-300 mb-6">
+                Это действие нельзя отменить.
+              </div>
+              <div className="flex gap-3">
+                <button
+                  onClick={() => handleDelete(deleteConfirm)}
+                  className="flex-1 rounded-xl bg-red-600 text-white py-3 font-semibold active:bg-red-700 disabled:opacity-50 hover:bg-red-700/90 focus:outline-none focus:ring-2 focus:ring-white/15"
+                  disabled={deleting}
+                >
+                  {deleting ? "Удаление..." : "Удалить"}
+                </button>
+                <button
+                  onClick={() => setDeleteConfirm(null)}
+                  className="flex-1 rounded-xl bg-zinc-700 text-white py-3 font-semibold active:bg-zinc-600 disabled:opacity-50 hover:bg-zinc-600/90 focus:outline-none focus:ring-2 focus:ring-white/15"
+                  disabled={deleting}
+                >
+                  Отмена
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </main>
     </RequireAuth>
   );

@@ -40,6 +40,15 @@ export type SessionDealerAssignment = {
   rake_entries: DealerRakeEntry[];
 };
 
+export type SessionWaiterAssignment = {
+  id: number;
+  waiter_id: number;
+  waiter_username: string;
+  waiter_hourly_rate: number | null;
+  started_at: string;
+  ended_at: string | null;
+};
+
 export type Session = {
   id: string;
   table_id: number;
@@ -53,6 +62,7 @@ export type Session = {
   waiter: Staff | null;
   chips_in_play: number | null;
   dealer_assignments: SessionDealerAssignment[];
+  waiter_assignments: SessionWaiterAssignment[];
 };
 
 export type Seat = {

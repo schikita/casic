@@ -5,17 +5,20 @@ import SeatGrid from "@/components/SeatGrid";
 import SeatActionSheet from "@/components/SeatActionSheet";
 import StartSessionModal from "@/components/StartSessionModal";
 import CashConfirmationModal from "@/components/CashConfirmationModal";
+import CreditDeductionModal from "@/components/CreditDeductionModal";
 import SessionCloseConfirmationModal from "@/components/SessionCloseConfirmationModal";
 import ReplaceDealerModal from "@/components/ReplaceDealerModal";
 import AddDealerModal from "@/components/AddDealerModal";
 import RemoveDealerModal from "@/components/RemoveDealerModal";
+import AddWaiterModal from "@/components/AddWaiterModal";
+import RemoveWaiterModal from "@/components/RemoveWaiterModal";
 import DealerRakeModal from "@/components/DealerRakeModal";
 import TopMenu from "@/components/TopMenu";
 import { RequireAuth } from "@/components/auth/RequireAuth";
 import { useAuth } from "@/components/auth/AuthContext";
 import { apiJson, getSelectedTableId, setSelectedTableId } from "@/lib/api";
 import { normalizeTableId, getErrorMessage, formatTime, calculateEarnings, formatMoney } from "@/lib/utils";
-import type { Seat, Session, Table, SessionDealerAssignment, DealerRakeEntry } from "@/lib/types";
+import type { Seat, Session, Table, SessionDealerAssignment, DealerRakeEntry, Staff } from "@/lib/types";
 
 function buildOpenSessionUrl(userRole: string | undefined, tableId?: number): string {
   let url = "/api/sessions/open";
@@ -40,7 +43,11 @@ export default function HomePage() {
   const [error, setError] = useState<string | null>(null);
   const [showStartModal, setShowStartModal] = useState<boolean>(false);
   const [showCashModal, setShowCashModal] = useState<boolean>(false);
+  const [showCreditDeductionModal, setShowCreditDeductionModal] = useState<boolean>(false);
   const [pendingChipAmount, setPendingChipAmount] = useState<number | null>(null);
+  const [pendingCreditAmount, setPendingCreditAmount] = useState<number>(0);
+  const [pendingCashAmount, setPendingCashAmount] = useState<number>(0);
+  const [pendingSeatNo, setPendingSeatNo] = useState<number | null>(null);
   const [showCloseModal, setShowCloseModal] = useState<boolean>(false);
   const [creditAmount, setCreditAmount] = useState<number>(0);
   const [creditByPlayer, setCreditByPlayer] = useState<Array<{ seat_no: number; player_name: string | null; amount: number }>>([]);
@@ -49,9 +56,12 @@ export default function HomePage() {
   const [removeDealerInfo, setRemoveDealerInfo] = useState<{ assignmentId: number; dealerName: string } | null>(null);
   const [rakeModalInfo, setRakeModalInfo] = useState<{ assignmentId: number; dealerName: string; currentRake: number } | null>(null);
   const [showDealerHistory, setShowDealerHistory] = useState<boolean>(false);
+  const [showAddWaiterModal, setShowAddWaiterModal] = useState<boolean>(false);
+  const [removeWaiterInfo, setRemoveWaiterInfo] = useState<{ assignmentId: number; waiterName: string } | null>(null);
   const [activeTab, setActiveTab] = useState<"table" | "dealers">("table");
   const [rake, setRake] = useState<{ total_rake: number; total_buyins: number; total_cashouts: number; total_credit: number } | null>(null);
   const [rakeLogInfo, setRakeLogInfo] = useState<{ dealerName: string; entries: DealerRakeEntry[] } | null>(null);
+  const [availableWaiters, setAvailableWaiters] = useState<Staff[]>([]);
 
   // Roles allowed to start sessions
   const canStartSession =
@@ -116,6 +126,17 @@ export default function HomePage() {
     }
   }, [user]);
 
+  const loadAvailableWaiters = useCallback(async () => {
+    if (user?.role !== "superadmin" && user?.role !== "table_admin") return;
+    try {
+      const waiters = await apiJson<Staff[]>("/api/sessions/available-waiters");
+      setAvailableWaiters(waiters);
+    } catch (e) {
+      // Silently fail - not critical
+      setAvailableWaiters([]);
+    }
+  }, [user]);
+
   const loadOpenSession = useCallback(async (tid?: number) => {
     setError(null);
     setLoading(true);
@@ -131,6 +152,8 @@ export default function HomePage() {
         ]);
         setSeats(list);
         setRake(rakeData);
+        // Load available waiters for add waiter button visibility
+        loadAvailableWaiters();
       } else {
         setSeats([]);
         setRake(null);
@@ -140,7 +163,7 @@ export default function HomePage() {
     } finally {
       setLoading(false);
     }
-  }, [user]);
+  }, [user, loadAvailableWaiters]);
 
   const handleSessionCreated = useCallback(() => {
     setShowStartModal(false);
@@ -190,8 +213,24 @@ export default function HomePage() {
     }
   }, [session, activeSeatNo, updateSeatInState]);
 
-  const confirmChipPurchase = useCallback(async (amount: number, paymentType: "cash" | "credit") => {
-    if (!session || !activeSeatNo) return;
+  const confirmChipPurchase = useCallback(async (amount: number, paymentType: "cash" | "credit", creditToDeduct?: number, seatNo?: number) => {
+    console.log("=== confirmChipPurchase called ===");
+    console.log("amount:", amount);
+    console.log("paymentType:", paymentType);
+    console.log("creditToDeduct:", creditToDeduct);
+    console.log("seatNo param:", seatNo);
+    console.log("session:", session);
+    console.log("activeSeatNo:", activeSeatNo);
+
+    // Use provided seatNo or fall back to activeSeatNo
+    const targetSeatNo = seatNo ?? activeSeatNo;
+    console.log("targetSeatNo:", targetSeatNo);
+
+    if (!session || targetSeatNo === null || targetSeatNo === undefined) {
+      console.log("=== EARLY RETURN: session or targetSeatNo is null/undefined ===");
+      return;
+    }
+    console.log("=== Passed validation, proceeding with API call ===");
     setError(null);
     setBusy(true);
     try {
@@ -199,8 +238,9 @@ export default function HomePage() {
         seat_no: number;
         amount: number;
         payment_type?: "cash" | "credit";
+        credit_to_deduct?: number;
       } = {
-        seat_no: activeSeatNo,
+        seat_no: targetSeatNo,
         amount: amount,
       };
 
@@ -209,6 +249,14 @@ export default function HomePage() {
         body.payment_type = paymentType;
       }
 
+      // Include credit_to_deduct for cashouts if specified
+      if (amount < 0 && creditToDeduct !== undefined && creditToDeduct > 0) {
+        body.credit_to_deduct = creditToDeduct;
+      }
+
+      console.log("=== API Request Body ===");
+      console.log(JSON.stringify(body, null, 2));
+
       const updated = await apiJson<Seat>(
         "/api/sessions/" + session.id + "/chips",
         {
@@ -216,7 +264,12 @@ export default function HomePage() {
           body: JSON.stringify(body),
         }
       );
+
+      console.log("=== API Response ===");
+      console.log("updated seat:", JSON.stringify(updated, null, 2));
+
       updateSeatInState(updated);
+      console.log("=== updateSeatInState called ===");
 
       // Refresh session and rake to get updated data
       const url = buildOpenSessionUrl(user?.role, session.table_id);
@@ -230,6 +283,7 @@ export default function HomePage() {
       setRake(rakeData);
 
       setShowCashModal(false);
+      setShowCreditDeductionModal(false);
       setPendingChipAmount(null);
       setActiveSeatNo(null); // Close the SeatActionSheet
     } catch (e) {
@@ -244,15 +298,28 @@ export default function HomePage() {
     setError(null);
 
     // Only show cash/credit modal for positive amounts (buyin)
-    // Negative amounts (cashout) are processed directly
     if (amount > 0) {
       setPendingChipAmount(amount);
       setShowCashModal(true);
     } else {
-      // For cashout, process directly without payment type
-      confirmChipPurchase(amount, "cash");
+      // For cashout, check if player has credit and show credit deduction modal
+      const activeSeat = seats.find((s) => s.seat_no === activeSeatNo);
+      const currentCredit = activeSeat?.credit ?? 0;
+      const currentCash = activeSeat?.cash ?? 0;
+
+      // Only show credit deduction modal for table_admin when there's credit
+      if (currentCredit > 0 && (user?.role === "table_admin" || user?.role === "superadmin")) {
+        setPendingChipAmount(amount);
+        setPendingCreditAmount(currentCredit); // Store the credit amount
+        setPendingCashAmount(currentCash); // Store the cash amount
+        setPendingSeatNo(activeSeatNo); // Store the seat number
+        setShowCreditDeductionModal(true);
+      } else {
+        // No credit or not table_admin, process directly
+        confirmChipPurchase(amount, "cash");
+      }
     }
-  }, [session, activeSeatNo, confirmChipPurchase]);
+  }, [session, activeSeatNo, seats, user, confirmChipPurchase]);
 
   const showCloseConfirmation = useCallback(async () => {
     if (!session) return;
@@ -459,7 +526,7 @@ export default function HomePage() {
                 onClick={() => setActiveTab("dealers")}
                 disabled={busy}
               >
-                Дилеры
+                Персонал
               </button>
             </div>
 
@@ -580,21 +647,97 @@ export default function HomePage() {
                 </div>
 
                 {/* Waiter Section - THIRD */}
-                {session.waiter && (
+                {session.waiter_assignments && session.waiter_assignments.length > 0 && (
                   <div className="mb-4">
-                    <div className="text-sm font-semibold text-white mb-2">Официант</div>
-                    <div className="rounded-lg bg-zinc-700 p-2 border border-zinc-600">
-                      <div className="text-sm font-semibold text-white">{session.waiter.username}</div>
-                      <div className="text-xs text-zinc-400">Начал: {formatTime(session.created_at)}</div>
-                      {session.waiter.hourly_rate && waiterEarnings > 0 && (
-                        <div className="text-xs text-zinc-400 mt-1">
-                          Заработано:{" "}
-                          <span className="font-semibold text-green-400">{formatMoney(waiterEarnings)}</span>
-                        </div>
-                      )}
+                    <div className="text-sm font-semibold text-white mb-2">Официанты</div>
+                    <div className="space-y-2">
+                      {(() => {
+                        // Group assignments by waiter
+                        const waiterNames = [...new Set(session.waiter_assignments.map(a => a.waiter_username))];
+                        return waiterNames.map((name) => {
+                          const assignments = session.waiter_assignments!.filter(a => a.waiter_username === name);
+                          const totalHours = assignments.reduce((sum, a) => {
+                            const startStr = a.started_at.endsWith('Z') ? a.started_at : a.started_at + 'Z';
+                            const start = new Date(startStr);
+                            const end = a.ended_at
+                              ? new Date(a.ended_at.endsWith('Z') ? a.ended_at : a.ended_at + 'Z')
+                              : new Date();
+                            const hours = (end.getTime() - start.getTime()) / (1000 * 60 * 60);
+                            return sum + hours;
+                          }, 0);
+                          const hourlyRate = assignments[0]?.waiter_hourly_rate || 0;
+                          const salary = Math.round(totalHours * hourlyRate);
+                          const isActive = assignments.some(a => !a.ended_at);
+                          const activeAssignment = assignments.find(a => !a.ended_at);
+
+                          return (
+                            <div key={name} className={`rounded-lg p-3 border ${isActive ? 'border-green-500 bg-zinc-700' : 'border-zinc-600 bg-zinc-700'}`}>
+                              <div className="flex items-center justify-between mb-2">
+                                <div className="text-sm font-semibold text-white">{name}</div>
+                                <div className="flex items-center gap-2">
+                                  {isActive && (
+                                    <span className="text-xs bg-green-500 text-white px-2 py-0.5 rounded-full">Активен</span>
+                                  )}
+                                  {isActive && activeAssignment && (user?.role === "superadmin" || user?.role === "table_admin") && (
+                                    <button
+                                      className="text-xs bg-red-600 text-white px-2 py-0.5 rounded-full active:bg-red-700"
+                                      onClick={() => setRemoveWaiterInfo({ assignmentId: activeAssignment.id, waiterName: name })}
+                                      disabled={busy}
+                                    >
+                                      Удалить
+                                    </button>
+                                  )}
+                                </div>
+                              </div>
+                              <div className="grid grid-cols-2 gap-2 text-xs">
+                                <div>
+                                  <span className="text-zinc-500">Время:</span>
+                                  <div className="text-zinc-300">
+                                    {assignments.map((a) => (
+                                      <div key={a.id}>
+                                        {formatTime(a.started_at)}–{a.ended_at ? formatTime(a.ended_at) : "…"}
+                                      </div>
+                                    ))}
+                                  </div>
+                                </div>
+                                <div>
+                                  <span className="text-zinc-500">Часы:</span>
+                                  <div className="text-zinc-300 font-semibold">{totalHours.toFixed(1)} ч</div>
+                                </div>
+                                <div>
+                                  <span className="text-zinc-500">Зарплата:</span>
+                                  <div className="text-green-400 font-semibold">{formatMoney(salary)}</div>
+                                </div>
+                              </div>
+                            </div>
+                          );
+                        });
+                      })()}
                     </div>
                   </div>
                 )}
+
+                {/* Waiter management button for table_admin and superadmin */}
+                {(user?.role === "superadmin" || user?.role === "table_admin") && (() => {
+                  const activeWaiterIds = session.waiter_assignments
+                    ?.filter((a) => !a.ended_at)
+                    .map((a) => a.waiter_id) || [];
+                  const unassignedWaiters = availableWaiters.filter(w => !activeWaiterIds.includes(w.id));
+
+                  if (unassignedWaiters.length === 0) return null;
+
+                  return (
+                    <div className="mb-4">
+                      <button
+                        className="w-full rounded-xl bg-green-600 text-white py-2 text-sm active:bg-green-700 disabled:opacity-50"
+                        onClick={() => setShowAddWaiterModal(true)}
+                        disabled={busy}
+                      >
+                        Добавить официанта
+                      </button>
+                    </div>
+                  );
+                })()}
 
                 {/* Separator between waiter and session dealers */}
                 {session.dealer_assignments && session.dealer_assignments.length > 0 && (
@@ -779,6 +922,38 @@ export default function HomePage() {
               loading={busy}
             />
 
+            <CreditDeductionModal
+              open={showCreditDeductionModal}
+              cashoutAmount={Math.abs(pendingChipAmount ?? 0)}
+              currentCredit={pendingCreditAmount}
+              currentCash={pendingCashAmount}
+              playerName={activeSeat?.player_name ?? null}
+              seatNo={activeSeatNo ?? 0}
+              onConfirm={async (creditToDeduct) => {
+                console.log("=== Modal onConfirm handler ===");
+                console.log("creditToDeduct:", creditToDeduct);
+                console.log("pendingChipAmount:", pendingChipAmount);
+                console.log("pendingSeatNo:", pendingSeatNo);
+                if (pendingChipAmount && pendingSeatNo !== null) {
+                  // Call API with explicit seat number, THEN close modal and reset state
+                  await confirmChipPurchase(pendingChipAmount, "cash", creditToDeduct, pendingSeatNo);
+                  setShowCreditDeductionModal(false);
+                  setPendingChipAmount(null);
+                  setPendingCreditAmount(0);
+                  setPendingCashAmount(0);
+                  setPendingSeatNo(null);
+                }
+              }}
+              onCancel={() => {
+                setShowCreditDeductionModal(false);
+                setPendingChipAmount(null);
+                setPendingCreditAmount(0);
+                setPendingCashAmount(0);
+                setPendingSeatNo(null);
+              }}
+              loading={busy}
+            />
+
             <SessionCloseConfirmationModal
               open={showCloseModal}
               creditAmount={creditAmount}
@@ -826,6 +1001,32 @@ export default function HomePage() {
                   if (session?.table_id) {
                     loadOpenSession(session.table_id);
                   }
+                }}
+              />
+            )}
+
+            <AddWaiterModal
+              open={showAddWaiterModal}
+              sessionId={session.id}
+              activeWaiterIds={
+                session.waiter_assignments
+                  ?.filter((a) => !a.ended_at)
+                  .map((a) => a.waiter_id) || []
+              }
+              onClose={() => setShowAddWaiterModal(false)}
+              onWaiterAdded={() => tableId && loadOpenSession(tableId)}
+            />
+
+            {removeWaiterInfo && (
+              <RemoveWaiterModal
+                open={true}
+                sessionId={session.id}
+                assignmentId={removeWaiterInfo.assignmentId}
+                waiterName={removeWaiterInfo.waiterName}
+                onClose={() => setRemoveWaiterInfo(null)}
+                onWaiterRemoved={() => {
+                  setRemoveWaiterInfo(null);
+                  tableId && loadOpenSession(tableId);
                 }}
               />
             )}

@@ -1009,14 +1009,29 @@ def _fill_template_with_data(
                 dst_cell.fill = src_cell.fill.copy()
 
     # --- Step 7: Create summary formulas at new positions ---
-    # Summary formulas sum each row from B to X (columns 2-24) for seats 1-10 value columns
-    # But we only use even columns: B, D, F, H, J, L, N, P, R, T (seats 1-10)
+    # Summary formulas sum each row from B to T (columns 2-20) for seats 1-10 value columns
+    # We only use even columns: B, D, F, H, J, L, N, P, R, T (seats 1-10)
+    # Place the sum in column V (22) instead of Z (26)
     for i, summary_row in enumerate(range(summary_start_row, summary_start_row + 6)):
-        ws.cell(row=summary_row, column=26, value=f"=SUM(B{summary_row}:X{summary_row})")
+        ws.cell(row=summary_row, column=22, value=f"=SUM(B{summary_row}:T{summary_row})")
+
+    # --- Step 7b: Add medium outer border around entire seats area ---
+    # Seats area: rows 1 to summary_start_row + 5, columns B to V (2 to 22)
+    seats_area_end_row = summary_start_row + 5
+    thick_side = Side(style='medium')
+    for r in range(1, seats_area_end_row + 1):
+        for c in range(2, 23):  # B to V (columns 2-22)
+            cell = ws.cell(row=r, column=c)
+            current_border = cell.border
+            left = thick_side if c == 2 else current_border.left
+            right = thick_side if c == 22 else current_border.right
+            top = thick_side if r == 1 else current_border.top
+            bottom = thick_side if r == seats_area_end_row else current_border.bottom
+            cell.border = Border(left=left, right=right, top=top, bottom=bottom)
 
     # --- Step 8: Update formulas throughout the sheet ---
     # The rows after summary section need to reference the new summary rows
-    # Original Z39-Z44 should now reference Z{summary_start_row} to Z{summary_start_row+5}
+    # Original V39-V44 should now reference V{summary_start_row} to V{summary_start_row+5}
     old_summary_rows = [39 + rows_to_insert, 40 + rows_to_insert, 41 + rows_to_insert,
                         42 + rows_to_insert, 43 + rows_to_insert, 44 + rows_to_insert]
     new_summary_rows = [summary_start_row, summary_start_row + 1, summary_start_row + 2,
@@ -1031,9 +1046,11 @@ def _fill_template_with_data(
             val = cell.value
             if isinstance(val, str) and val.startswith('='):
                 new_val = val
-                # Replace references to old summary rows with new ones
+                # Replace references to old summary rows with new ones (changed from Z to V)
                 for old_row, new_row in zip(old_summary_rows, new_summary_rows):
-                    new_val = re.sub(rf'\bZ{old_row}\b', f'Z{new_row}', new_val)
+                    new_val = re.sub(rf'\bV{old_row}\b', f'V{new_row}', new_val)
+                    # Also replace any Z references to V
+                    new_val = re.sub(rf'\bZ{old_row}\b', f'V{new_row}', new_val)
                 # Replace references to row 24 (player names from old template) with row 1
                 for c in 'BDFHJLNPRTXVX':
                     new_val = re.sub(rf'\b{c}24\b', f'{c}1', new_val)
@@ -1079,18 +1096,65 @@ def _fill_template_with_data(
     sorted_dealer_ids = sorted(dealers_with_rake.keys())
     num_dealers = len(sorted_dealer_ids)
 
-    # Fill dealer names, headers, and rake entries
+    # Clear ALL dealer columns first (to remove any template dummy data)
+    # Template has up to 3 dealers in columns A-B, C-D, E-F
+    # Also clear the bottom summary area (rows 66-70 + rows_to_insert)
+    no_border = Border()
+    TEMPLATE_DEALER_CLEAR_END = 70 + rows_to_insert  # Clear well past the template summary rows
+    for idx in range(0, 3):
+        col_rake = 1 + idx * 2
+        col_time = col_rake + 1
+        # Clear dealer name row, header row, all data rows, and summary rows
+        for row in range(DEALER_SECTION_START_ROW, TEMPLATE_DEALER_CLEAR_END + 1):
+            for col in [col_rake, col_time]:
+                cell = ws.cell(row=row, column=col)
+                cell.value = None
+                cell.fill = no_fill
+                cell.border = no_border
+
+    # Clear G column (column 7) completely - always empty, no borders
+    for row in range(DEALER_SECTION_START_ROW, TEMPLATE_DEALER_CLEAR_END + 1):
+        cell = ws.cell(row=row, column=7)
+        cell.value = None
+        cell.fill = no_fill
+        cell.border = no_border
+
+    # Define dealer block background colors
+    dealer_name_fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")  # Blue for name
+    dealer_header_fill = PatternFill(start_color="D9E2F3", end_color="D9E2F3", fill_type="solid")  # Light blue for headers
+    thin_border = Border(
+        left=Side(style='thin'),
+        right=Side(style='thin'),
+        top=Side(style='thin'),
+        bottom=Side(style='thin')
+    )
+
+    # Track the maximum data row used across all dealers
+    max_dealer_data_row = DEALER_DATA_START_ROW - 1  # Start before first data row
+
+    # Fill dealer names, headers, and rake entries (only for actual dealers)
     for idx, dealer_id in enumerate(sorted_dealer_ids):
         col_rake = 1 + idx * 2   # A=1, C=3, E=5, ...
         col_time = col_rake + 1  # B=2, D=4, F=6, ...
 
-        # Dealer name
+        # Dealer name with background color
         dealer_name = dealer_names.get(dealer_id, f"D{idx+1}")
-        ws.cell(row=DEALER_SECTION_START_ROW, column=col_rake, value=dealer_name)
+        name_cell = ws.cell(row=DEALER_SECTION_START_ROW, column=col_rake, value=dealer_name)
+        name_cell.fill = dealer_name_fill
+        name_cell.font = Font(bold=True, color="FFFFFF")
+        name_cell.border = thin_border
+        # Extend background to second column of dealer block
+        name_cell2 = ws.cell(row=DEALER_SECTION_START_ROW, column=col_time)
+        name_cell2.fill = dealer_name_fill
+        name_cell2.border = thin_border
 
-        # Headers
-        ws.cell(row=DEALER_HEADER_ROW, column=col_rake, value="Рейк")
-        ws.cell(row=DEALER_HEADER_ROW, column=col_time, value="Время")
+        # Headers with background color
+        header_rake = ws.cell(row=DEALER_HEADER_ROW, column=col_rake, value="Рейк")
+        header_rake.fill = dealer_header_fill
+        header_rake.border = thin_border
+        header_time = ws.cell(row=DEALER_HEADER_ROW, column=col_time, value="Время")
+        header_time.fill = dealer_header_fill
+        header_time.border = thin_border
 
         # Rake entries
         rake_entries = sorted(dealers_with_rake[dealer_id], key=lambda e: cast(dt.datetime, e.created_at))
@@ -1098,141 +1162,74 @@ def _fill_template_with_data(
             row = DEALER_DATA_START_ROW + i
             if row > DEALER_DATA_END_ROW:
                 break
-            ws.cell(row=row, column=col_rake, value=int(cast(int, entry.amount)))
+            rake_cell = ws.cell(row=row, column=col_rake, value=int(cast(int, entry.amount)))
+            rake_cell.border = thin_border
             time_str = cast(dt.datetime, entry.created_at).strftime("%H:%M")
-            ws.cell(row=row, column=col_time, value=time_str)
-
-    # Clear unused dealer columns (template has D1, D2, D3 - clear extras if fewer dealers)
-    for idx in range(num_dealers, 3):
-        col_rake = 1 + idx * 2
-        col_time = col_rake + 1
-        # Clear dealer name row, header row, and all data rows
-        for row in range(DEALER_SECTION_START_ROW, DEALER_DATA_END_ROW + 3):
-            ws.cell(row=row, column=col_rake).value = None
-            ws.cell(row=row, column=col_rake).fill = no_fill
-            ws.cell(row=row, column=col_time).value = None
-            ws.cell(row=row, column=col_time).fill = no_fill
+            time_cell = ws.cell(row=row, column=col_time, value=time_str)
+            time_cell.border = thin_border
+            # Track the maximum row used
+            if row > max_dealer_data_row:
+                max_dealer_data_row = row
 
     # === DEALER TOTALS SECTION ===
-    # Template had totals at rows 87-89, after operations: 66-68 + rows_to_insert
-    DEALER_TOTALS_ROW = 66 + rows_to_insert
-    DEALER_TIP_ROW = 67 + rows_to_insert
-    DEALER_GROSS_ROW = 68 + rows_to_insert
-
-    # Add per-dealer totals
+    # Position totals right after the last data row (not at a fixed position)
+    # Add 1 empty row after data, then totals
     grand_total_rake = 0
-    for idx, dealer_id in enumerate(sorted_dealer_ids):
-        col_rake = 1 + idx * 2   # A=1, C=3, E=5, ...
-        col_letter = get_column_letter(col_rake)
 
-        # Calculate total for this dealer
-        rake_entries = dealers_with_rake[dealer_id]
-        dealer_total = sum(int(cast(int, entry.amount)) for entry in rake_entries)
-        grand_total_rake += dealer_total
-
-        # Write SUM formula for this dealer
-        ws.cell(row=DEALER_TOTALS_ROW, column=col_rake,
-                value=f"=SUM({col_letter}{DEALER_DATA_START_ROW}:{col_letter}{DEALER_DATA_END_ROW})")
-
-    # Grand total for all dealers (G column)
     if num_dealers > 0:
-        total_formula_parts = []
-        for idx in range(num_dealers):
-            col_letter = get_column_letter(1 + idx * 2)
-            total_formula_parts.append(f"{col_letter}{DEALER_TOTALS_ROW}")
-        ws.cell(row=DEALER_TOTALS_ROW, column=7, value=f"=SUM({'+'.join(total_formula_parts)})")
-        ws.cell(row=DEALER_TOTALS_ROW - 1, column=7, value="Рэйк+Тип")
+        DEALER_TOTALS_ROW = max_dealer_data_row + 2  # 1 empty row, then totals
 
-    # === SECTION: Waiter salaries (columns H-L) ===
-    # Row position after insert and delete operations: 26 + rows_to_insert
-    WAITER_SECTION_START = 26 + rows_to_insert
+        # Add per-dealer totals (only for dealers that have data)
+        for idx, dealer_id in enumerate(sorted_dealer_ids):
+            col_rake = 1 + idx * 2   # A=1, C=3, E=5, ...
+            col_letter = get_column_letter(col_rake)
 
-    # Header row for waiter section
-    ws.cell(row=WAITER_SECTION_START, column=8, value="Официанты")
-    ws.cell(row=WAITER_SECTION_START + 1, column=8, value="Имя")
-    ws.cell(row=WAITER_SECTION_START + 1, column=9, value="Ставка")
-    ws.cell(row=WAITER_SECTION_START + 1, column=10, value="Часов")
-    ws.cell(row=WAITER_SECTION_START + 1, column=11, value="Заработок")
-    ws.cell(row=WAITER_SECTION_START + 1, column=12, value="Период")
+            # Calculate total for this dealer
+            rake_entries = dealers_with_rake[dealer_id]
+            dealer_total = sum(int(cast(int, entry.amount)) for entry in rake_entries)
+            grand_total_rake += dealer_total
 
-    # Collect waiter work periods
-    waiter_periods: list[dict] = []
-    waiters = [s for s in staff if s.role == "waiter"]
+            # Write SUM formula for this dealer
+            total_cell = ws.cell(row=DEALER_TOTALS_ROW, column=col_rake,
+                    value=f"=SUM({col_letter}{DEALER_DATA_START_ROW}:{col_letter}{max_dealer_data_row})")
+            total_cell.font = Font(bold=True)
+            total_cell.border = thin_border
 
-    for waiter in waiters:
-        waiter_id = int(cast(int, waiter.id))
-        waiter_name = cast(str, waiter.username)
-        hourly_rate = int(cast(int, waiter.hourly_rate)) if waiter.hourly_rate else 0
+    # === SECTION: Clear columns V and beyond for bottom part ===
+    # Clear columns V and beyond (22+) for the bottom section - values, fills, and borders
+    no_border = Border()
+    BOTTOM_SECTION_START = 26 + rows_to_insert
+    BOTTOM_SECTION_END = BOTTOM_SECTION_START + 50  # Clear enough rows for bottom section
 
-        # Calculate hours and time range for this waiter
-        hours = _calculate_waiter_hours(sessions, waiter_id)
-        if hours > 0:
-            earnings = round(hours * hourly_rate)
-            start_time, end_time = _get_waiter_time_range(sessions, waiter_id)
-            time_range = ""
-            if start_time and end_time:
-                time_range = f"{start_time.strftime('%H:%M')} - {end_time.strftime('%H:%M')}"
-            waiter_periods.append({
-                "name": waiter_name,
-                "hourly_rate": hourly_rate,
-                "hours": round(hours, 2),
-                "earnings": earnings,
-                "time_range": time_range
-            })
+    for row in range(BOTTOM_SECTION_START, BOTTOM_SECTION_END):
+        for col in range(16, 50):  # P onwards (column 16+) - after data columns
+            cell = ws.cell(row=row, column=col)
+            cell.value = None
+            cell.fill = no_fill
+            cell.border = no_border
 
-    # Fill waiter data
-    waiter_data_start_row = WAITER_SECTION_START + 2
-    for idx, wp in enumerate(waiter_periods):
-        row = waiter_data_start_row + idx
-        ws.cell(row=row, column=8, value=wp["name"])
-        ws.cell(row=row, column=9, value=wp["hourly_rate"])
-        ws.cell(row=row, column=10, value=wp["hours"])
-        ws.cell(row=row, column=11, value=wp["earnings"])
-        ws.cell(row=row, column=12, value=wp["time_range"])
+    # === Clear W-Z columns in seat area (columns 23-26, rows 1 to summary) ===
+    for row in range(1, summary_start_row + 7):
+        for col in range(23, 27):  # W, X, Y, Z
+            cell = ws.cell(row=row, column=col)
+            cell.value = None
+            cell.fill = no_fill
+            cell.border = no_border
 
-    # Totals row for waiters
-    waiter_totals_row = waiter_data_start_row + len(waiter_periods)
-    if waiter_periods:
-        ws.cell(row=waiter_totals_row, column=8, value="Итого")
-        total_waiter_hours = sum(wp["hours"] for wp in waiter_periods)
-        total_waiter_earnings = sum(wp["earnings"] for wp in waiter_periods)
-        ws.cell(row=waiter_totals_row, column=10, value=round(total_waiter_hours, 2))
-        ws.cell(row=waiter_totals_row, column=11, value=total_waiter_earnings)
+    # === Clear area below seats but before bottom blocks ===
+    # This is the gap between summary rows and dealer section
+    # Don't clear BOTTOM_SECTION_START itself - that's where dealer names go
+    gap_start = summary_start_row + 6
+    gap_end = BOTTOM_SECTION_START - 1  # Stop before dealer name row
+    for row in range(gap_start, gap_end + 1):
+        for col in range(1, 50):  # Clear all columns in the gap area
+            cell = ws.cell(row=row, column=col)
+            cell.value = None
+            cell.fill = no_fill
+            cell.border = no_border
 
-    # Clear old template waiter area cells that are no longer needed
-    # Template had: I49=100, J49=75, K49=75, L49=75 (hourly rates)
-    # Template had: row 87 with SUM formulas, row 88 with "Рабочие часы" labels
-    # These rows shift to: 28 + rows_to_insert, 66 + rows_to_insert, 67 + rows_to_insert
-
-    # Clear old hourly rate row (template row 49 -> 28 + rows_to_insert)
-    old_waiter_rate_row = 28 + rows_to_insert
-    for col in range(8, 13):  # H, I, J, K, L
-        if old_waiter_rate_row > waiter_totals_row:  # Only clear if below our new data
-            ws.cell(row=old_waiter_rate_row, column=col).value = None
-            ws.cell(row=old_waiter_rate_row, column=col).fill = no_fill
-
-    # Clear old SUM formulas row (template row 87 -> 66 + rows_to_insert)
-    old_sum_row = 66 + rows_to_insert
-    for col in range(8, 13):  # H, I, J, K, L
-        ws.cell(row=old_sum_row, column=col).value = None
-        ws.cell(row=old_sum_row, column=col).fill = no_fill
-
-    # Clear old "Рабочие часы" labels row (template row 88 -> 67 + rows_to_insert)
-    old_labels_row = 67 + rows_to_insert
-    for col in range(8, 13):  # H, I, J, K, L
-        ws.cell(row=old_labels_row, column=col).value = None
-        ws.cell(row=old_labels_row, column=col).fill = no_fill
-
-    # Clear additional rows that might have old template data (rows 47-49)
-    for clear_row in [26 + rows_to_insert - 1, 27 + rows_to_insert - 1]:
-        for col in range(8, 13):  # H, I, J, K, L
-            cell = ws.cell(row=clear_row, column=col)
-            if cell.value and isinstance(cell.value, str) and cell.value.startswith('='):
-                cell.value = None
-                cell.fill = no_fill
-
-    # === SECTION: N-P columns - Расходы, Бонусы, З/П тотал, Рейк ===
-    # Column M is empty, data starts at column N (14)
+    # === SECTION: H-J columns - Расходы, Доходы, З/П тотал, Рейк ===
+    # Data starts at column H (8) - shifted from N (14) to remove waiter columns
     # Use template font: Roboto Mono, size 11
 
     # After operations, template row 48 becomes 27 + rows_to_insert
@@ -1240,13 +1237,14 @@ def _fill_template_with_data(
     template_font = Font(name="Roboto Mono", size=11)
     template_font_bold = Font(name="Roboto Mono", size=11, bold=True)
 
-    # Clear ALL old template data in M-P columns (13-16)
+    # Clear ALL old template data in H-U columns (8-21) for bottom section
+    # Start from row 26 (dealer name row) to clear any leftover waiter data in H+ columns
     no_border = Border()
-    TEMPLATE_CLEAR_START = 27 + rows_to_insert
+    TEMPLATE_CLEAR_START = 26 + rows_to_insert
     TEMPLATE_CLEAR_END = 70 + rows_to_insert
 
     for clear_row in range(TEMPLATE_CLEAR_START, TEMPLATE_CLEAR_END + 1):
-        for col in range(13, 17):  # M, N, O, P columns
+        for col in range(8, 22):  # H through U columns (8-21)
             cell = ws.cell(row=clear_row, column=col)
             cell.value = None
             cell.fill = no_fill
@@ -1273,6 +1271,7 @@ def _fill_template_with_data(
             total_staff_salary += earnings
             staff_salaries.append((dealer_name, "Дилер", earnings))
 
+    waiters = [s for s in staff if s.role == "waiter"]
     for waiter in waiters:
         waiter_id = int(cast(int, waiter.id))
         waiter_name = cast(str, waiter.username)
@@ -1283,135 +1282,211 @@ def _fill_template_with_data(
             total_staff_salary += earnings
             staff_salaries.append((waiter_name, "Официант", earnings))
 
-    # Write all data starting from NP_SECTION_START, column N (14)
+    # Write all data starting from NP_SECTION_START, column H (8)
     current_row = NP_SECTION_START
+    stats_start_row = current_row  # Track start for outer border
+
+    # Define light background colors for each section
+    expenses_fill = PatternFill(start_color="FFF2CC", end_color="FFF2CC", fill_type="solid")  # Light yellow
+    income_fill = PatternFill(start_color="E2EFDA", end_color="E2EFDA", fill_type="solid")  # Light green
+    salary_fill = PatternFill(start_color="DDEBF7", end_color="DDEBF7", fill_type="solid")  # Light blue
+    rake_fill = PatternFill(start_color="EDEDED", end_color="EDEDED", fill_type="solid")  # Light gray
+    thin_border = Border(
+        left=Side(style='thin'),
+        right=Side(style='thin'),
+        top=Side(style='thin'),
+        bottom=Side(style='thin')
+    )
 
     # === РАСХОДЫ (Expenses) ===
-    ws.cell(row=current_row, column=14, value="РАСХОДЫ")
-    ws.cell(row=current_row, column=14).font = template_font_bold
+    expenses_start = current_row
+    ws.cell(row=current_row, column=8, value="РАСХОДЫ")
+    ws.cell(row=current_row, column=8).font = template_font_bold
     current_row += 1
 
     if negative_adjustments:
         for adj in negative_adjustments:
             amount = int(cast(int, adj.amount))
             comment = cast(str, adj.comment) if adj.comment else ""
-            ws.cell(row=current_row, column=14, value=comment[:30])
-            ws.cell(row=current_row, column=14).font = template_font
-            ws.cell(row=current_row, column=15, value=amount)
-            ws.cell(row=current_row, column=15).font = template_font
+            ws.cell(row=current_row, column=8, value=comment[:30])
+            ws.cell(row=current_row, column=8).font = template_font
+            ws.cell(row=current_row, column=9, value=amount)
+            ws.cell(row=current_row, column=9).font = template_font
             current_row += 1
         expenses_total = sum(int(cast(int, ba.amount)) for ba in negative_adjustments)
-        ws.cell(row=current_row, column=14, value="Итого:")
-        ws.cell(row=current_row, column=14).font = template_font_bold
-        ws.cell(row=current_row, column=15, value=expenses_total)
-        ws.cell(row=current_row, column=15).font = template_font_bold
+        ws.cell(row=current_row, column=8, value="Итого:")
+        ws.cell(row=current_row, column=8).font = template_font_bold
+        ws.cell(row=current_row, column=9, value=expenses_total)
+        ws.cell(row=current_row, column=9).font = template_font_bold
         current_row += 1
     else:
-        ws.cell(row=current_row, column=14, value="(нет)")
-        ws.cell(row=current_row, column=14).font = template_font
+        ws.cell(row=current_row, column=8, value="(нет)")
+        ws.cell(row=current_row, column=8).font = template_font
         current_row += 1
+    expenses_end = current_row - 1
+
+    # Apply expenses background
+    for r in range(expenses_start, expenses_end + 1):
+        for c in range(8, 11):  # H-J
+            ws.cell(row=r, column=c).fill = expenses_fill
+            ws.cell(row=r, column=c).border = thin_border
 
     current_row += 1  # Empty row
 
-    # === БОНУСЫ (Bonuses) ===
-    ws.cell(row=current_row, column=14, value="БОНУСЫ")
-    ws.cell(row=current_row, column=14).font = template_font_bold
+    # === ДОХОДЫ (Income) ===
+    income_start = current_row
+    ws.cell(row=current_row, column=8, value="ДОХОДЫ")
+    ws.cell(row=current_row, column=8).font = template_font_bold
     current_row += 1
 
     if positive_adjustments:
         for adj in positive_adjustments:
             amount = int(cast(int, adj.amount))
             comment = cast(str, adj.comment) if adj.comment else ""
-            ws.cell(row=current_row, column=14, value=comment[:30])
-            ws.cell(row=current_row, column=14).font = template_font
-            ws.cell(row=current_row, column=15, value=amount)
-            ws.cell(row=current_row, column=15).font = template_font
+            ws.cell(row=current_row, column=8, value=comment[:30])
+            ws.cell(row=current_row, column=8).font = template_font
+            ws.cell(row=current_row, column=9, value=amount)
+            ws.cell(row=current_row, column=9).font = template_font
             current_row += 1
         bonuses_total = sum(int(cast(int, ba.amount)) for ba in positive_adjustments)
-        ws.cell(row=current_row, column=14, value="Итого:")
-        ws.cell(row=current_row, column=14).font = template_font_bold
-        ws.cell(row=current_row, column=15, value=bonuses_total)
-        ws.cell(row=current_row, column=15).font = template_font_bold
+        ws.cell(row=current_row, column=8, value="Итого:")
+        ws.cell(row=current_row, column=8).font = template_font_bold
+        ws.cell(row=current_row, column=9, value=bonuses_total)
+        ws.cell(row=current_row, column=9).font = template_font_bold
         current_row += 1
     else:
-        ws.cell(row=current_row, column=14, value="(нет)")
-        ws.cell(row=current_row, column=14).font = template_font
+        ws.cell(row=current_row, column=8, value="(нет)")
+        ws.cell(row=current_row, column=8).font = template_font
         current_row += 1
+    income_end = current_row - 1
+
+    # Apply income background
+    for r in range(income_start, income_end + 1):
+        for c in range(8, 11):  # H-J
+            ws.cell(row=r, column=c).fill = income_fill
+            ws.cell(row=r, column=c).border = thin_border
 
     current_row += 1  # Empty row
 
     # === З/П ТОТАЛ (Staff Salaries) ===
-    ws.cell(row=current_row, column=14, value="З/П ТОТАЛ")
-    ws.cell(row=current_row, column=14).font = template_font_bold
+    salary_start = current_row
+    ws.cell(row=current_row, column=8, value="З/П ТОТАЛ")
+    ws.cell(row=current_row, column=8).font = template_font_bold
     current_row += 1
 
     if staff_salaries:
         for name, role, earnings in staff_salaries:
-            ws.cell(row=current_row, column=14, value=name)
-            ws.cell(row=current_row, column=14).font = template_font
-            ws.cell(row=current_row, column=15, value=role)
-            ws.cell(row=current_row, column=15).font = template_font
-            ws.cell(row=current_row, column=16, value=earnings)
-            ws.cell(row=current_row, column=16).font = template_font
+            ws.cell(row=current_row, column=8, value=name)
+            ws.cell(row=current_row, column=8).font = template_font
+            ws.cell(row=current_row, column=9, value=role)
+            ws.cell(row=current_row, column=9).font = template_font
+            ws.cell(row=current_row, column=10, value=earnings)
+            ws.cell(row=current_row, column=10).font = template_font
             current_row += 1
-        ws.cell(row=current_row, column=14, value="Итого:")
-        ws.cell(row=current_row, column=14).font = template_font_bold
-        ws.cell(row=current_row, column=16, value=total_staff_salary)
-        ws.cell(row=current_row, column=16).font = template_font_bold
+        ws.cell(row=current_row, column=8, value="Итого:")
+        ws.cell(row=current_row, column=8).font = template_font_bold
+        ws.cell(row=current_row, column=10, value=total_staff_salary)
+        ws.cell(row=current_row, column=10).font = template_font_bold
         current_row += 1
     else:
-        ws.cell(row=current_row, column=14, value="(нет)")
-        ws.cell(row=current_row, column=14).font = template_font
+        ws.cell(row=current_row, column=8, value="(нет)")
+        ws.cell(row=current_row, column=8).font = template_font
         current_row += 1
+    salary_end = current_row - 1
+
+    # Apply salary background
+    for r in range(salary_start, salary_end + 1):
+        for c in range(8, 11):  # H-J
+            ws.cell(row=r, column=c).fill = salary_fill
+            ws.cell(row=r, column=c).border = thin_border
 
     current_row += 1  # Blank line
 
     # === РЕЙК БРУТТО / РЕЙК НЕТТО ===
-    ws.cell(row=current_row, column=14, value="Рейк брутто")
-    ws.cell(row=current_row, column=14).font = template_font_bold
-    ws.cell(row=current_row, column=15, value=grand_total_rake)
-    ws.cell(row=current_row, column=15).font = template_font_bold
+    rake_start = current_row
+    ws.cell(row=current_row, column=8, value="Рейк брутто")
+    ws.cell(row=current_row, column=8).font = template_font_bold
+    ws.cell(row=current_row, column=9, value=grand_total_rake)
+    ws.cell(row=current_row, column=9).font = template_font_bold
     current_row += 1
 
-    # Calculate total expenses (sum of negative balance adjustments - already negative)
+    # Calculate totals for net rake
+    # total_expenses: sum of negative balance adjustments (already negative values)
     total_expenses = sum(int(cast(int, ba.amount)) for ba in negative_adjustments) if negative_adjustments else 0
+    # total_income: sum of positive balance adjustments
+    total_income = sum(int(cast(int, ba.amount)) for ba in positive_adjustments) if positive_adjustments else 0
 
-    # Net rake = gross rake + expenses (expenses are negative, so we add them)
-    net_rake = grand_total_rake + total_expenses
+    # Net rake = rake brutto - expenses + income - salaries
+    # Since total_expenses is already negative, we add it (which subtracts the expense)
+    net_rake = grand_total_rake + total_expenses + total_income - total_staff_salary
 
-    ws.cell(row=current_row, column=14, value="Рейк нетто")
-    ws.cell(row=current_row, column=14).font = template_font_bold
-    ws.cell(row=current_row, column=15, value=net_rake)
-    ws.cell(row=current_row, column=15).font = template_font_bold
+    ws.cell(row=current_row, column=8, value="Рейк нетто")
+    ws.cell(row=current_row, column=8).font = template_font_bold
+    ws.cell(row=current_row, column=9, value=net_rake)
+    ws.cell(row=current_row, column=9).font = template_font_bold
     current_row += 1
+    rake_end = current_row - 1
 
-    # === SECTION: R-U columns - Chip operations (+/-) ===
-    # Column Q (17) is empty, data starts at column R (18)
-    # R = (-) amount, S = (-) time, T = (+) amount, U = (+) time
+    # Apply rake background
+    for r in range(rake_start, rake_end + 1):
+        for c in range(8, 11):  # H-J
+            ws.cell(row=r, column=c).fill = rake_fill
+            ws.cell(row=r, column=c).border = thin_border
+
+    stats_end_row = current_row - 1  # Track end for outer border
+
+    # Apply thick outer border around entire stats section
+    thick_side = Side(style='medium')
+    for r in range(stats_start_row, stats_end_row + 1):
+        for c in range(8, 11):  # H-J
+            cell = ws.cell(row=r, column=c)
+            left = thick_side if c == 8 else cell.border.left
+            right = thick_side if c == 10 else cell.border.right
+            top = thick_side if r == stats_start_row else cell.border.top
+            bottom = thick_side if r == stats_end_row else cell.border.bottom
+            cell.border = Border(left=left, right=right, top=top, bottom=bottom)
+
+    # === SECTION: L-O columns - Chip operations (+/-) ===
+    # Data starts at column L (12) - shifted from R (18)
+    # L = (-) amount, M = (-) time, N = (+) amount, O = (+) time
 
     QT_SECTION_START = 27 + rows_to_insert  # Template row 48
 
-    # Clear old template data in Q-U columns (17-21)
-    for clear_row in range(QT_SECTION_START, QT_SECTION_START + 30):
-        for col in range(17, 22):  # Q, R, S, T, U
-            cell = ws.cell(row=clear_row, column=col)
-            cell.value = None
-            cell.fill = no_fill
-            cell.border = no_border
-            cell.font = Font()
+    # Note: H-U columns already cleared above
 
-    # Header row - columns S-T (19-20)
-    ws.cell(row=QT_SECTION_START, column=19, value="Жетоны")
-    ws.cell(row=QT_SECTION_START, column=19).font = template_font_bold
-    ws.cell(row=QT_SECTION_START, column=20, value="на столе")
-    ws.cell(row=QT_SECTION_START, column=20).font = template_font_bold
+    # Define background colors for chip operations
+    negative_fill = PatternFill(start_color="FCE4D6", end_color="FCE4D6", fill_type="solid")  # Very light red/peach
+    positive_fill = PatternFill(start_color="E2EFDA", end_color="E2EFDA", fill_type="solid")  # Light green
+    chip_thin_border = Border(
+        left=Side(style='thin'),
+        right=Side(style='thin'),
+        top=Side(style='thin'),
+        bottom=Side(style='thin')
+    )
+
+    # Header row - columns L-O (12-15) with title spanning across
+    chips_start_row = QT_SECTION_START
+    ws.cell(row=QT_SECTION_START, column=13, value="Жетоны")
+    ws.cell(row=QT_SECTION_START, column=13).font = template_font_bold
+    ws.cell(row=QT_SECTION_START, column=14, value="на столе")
+    ws.cell(row=QT_SECTION_START, column=14).font = template_font_bold
+    # Apply borders to header row
+    for c in range(12, 16):
+        ws.cell(row=QT_SECTION_START, column=c).border = chip_thin_border
 
     # Column headers row (2 rows down)
     headers_row = QT_SECTION_START + 2
-    ws.cell(row=headers_row, column=18, value="(-)")
-    ws.cell(row=headers_row, column=18).font = template_font_bold
-    ws.cell(row=headers_row, column=20, value="(+)")
-    ws.cell(row=headers_row, column=20).font = template_font_bold
+    ws.cell(row=headers_row, column=12, value="(-)")
+    ws.cell(row=headers_row, column=12).font = template_font_bold
+    ws.cell(row=headers_row, column=12).fill = negative_fill
+    ws.cell(row=headers_row, column=13).fill = negative_fill
+    ws.cell(row=headers_row, column=14, value="(+)")
+    ws.cell(row=headers_row, column=14).font = template_font_bold
+    ws.cell(row=headers_row, column=14).fill = positive_fill
+    ws.cell(row=headers_row, column=15).fill = positive_fill
+    # Apply borders to headers row
+    for c in range(12, 16):
+        ws.cell(row=headers_row, column=c).border = chip_thin_border
 
     # Separate chip purchases into negative (cashouts) and positive (buy-ins)
     negative_ops: list[tuple[int, dt.datetime]] = []  # (amount, timestamp)
@@ -1436,78 +1511,85 @@ def _fill_template_with_data(
     for i in range(max_ops):
         row = data_start_row + i
 
-        # Negative (cashout) - columns R (18) and S (19)
+        # Negative (cashout) - columns L (12) and M (13)
+        cell_L = ws.cell(row=row, column=12)
+        cell_M = ws.cell(row=row, column=13)
+        cell_L.fill = negative_fill
+        cell_L.border = chip_thin_border
+        cell_M.fill = negative_fill
+        cell_M.border = chip_thin_border
         if i < len(negative_ops):
             amount, ts = negative_ops[i]
-            ws.cell(row=row, column=18, value=amount)
-            ws.cell(row=row, column=18).font = template_font
-            ws.cell(row=row, column=19, value=ts.strftime("%H:%M"))
-            ws.cell(row=row, column=19).font = template_font
+            cell_L.value = amount
+            cell_L.font = template_font
+            cell_M.value = ts.strftime("%H:%M")
+            cell_M.font = template_font
 
-        # Positive (buy-in) - columns T (20) and U (21)
+        # Positive (buy-in) - columns N (14) and O (15)
+        cell_N = ws.cell(row=row, column=14)
+        cell_O = ws.cell(row=row, column=15)
+        cell_N.fill = positive_fill
+        cell_N.border = chip_thin_border
+        cell_O.fill = positive_fill
+        cell_O.border = chip_thin_border
         if i < len(positive_ops):
             amount, ts = positive_ops[i]
-            ws.cell(row=row, column=20, value=amount)
-            ws.cell(row=row, column=20).font = template_font
-            ws.cell(row=row, column=21, value=ts.strftime("%H:%M"))
-            ws.cell(row=row, column=21).font = template_font
+            cell_N.value = amount
+            cell_N.font = template_font
+            cell_O.value = ts.strftime("%H:%M")
+            cell_O.font = template_font
 
     # Totals row
+    chips_end_row = data_start_row + max_ops - 1 if max_ops > 0 else headers_row
     if max_ops > 0:
         totals_row = data_start_row + max_ops
         neg_total = sum(op[0] for op in negative_ops)
         pos_total = sum(op[0] for op in positive_ops)
 
-        ws.cell(row=totals_row, column=18, value=neg_total)
-        ws.cell(row=totals_row, column=18).font = template_font_bold
-        ws.cell(row=totals_row, column=20, value=pos_total)
-        ws.cell(row=totals_row, column=20).font = template_font_bold
+        # Negative total with label
+        cell_L_tot = ws.cell(row=totals_row, column=12, value=neg_total)
+        cell_L_tot.font = template_font_bold
+        cell_L_tot.fill = negative_fill
+        cell_L_tot.border = chip_thin_border
+        cell_M_tot = ws.cell(row=totals_row, column=13, value="Σ(-)")
+        cell_M_tot.font = template_font_bold
+        cell_M_tot.fill = negative_fill
+        cell_M_tot.border = chip_thin_border
 
-        # Net change row
+        # Positive total with label
+        cell_N_tot = ws.cell(row=totals_row, column=14, value=pos_total)
+        cell_N_tot.font = template_font_bold
+        cell_N_tot.fill = positive_fill
+        cell_N_tot.border = chip_thin_border
+        cell_O_tot = ws.cell(row=totals_row, column=15, value="Σ(+)")
+        cell_O_tot.font = template_font_bold
+        cell_O_tot.fill = positive_fill
+        cell_O_tot.border = chip_thin_border
+
+        # Net change row with label
         net_row = totals_row + 1
-        ws.cell(row=net_row, column=20, value=neg_total + pos_total)
-        ws.cell(row=net_row, column=20).font = template_font_bold
+        ws.cell(row=net_row, column=12).border = chip_thin_border
+        cell_net_label = ws.cell(row=net_row, column=13, value="Итого:")
+        cell_net_label.font = template_font_bold
+        cell_net_label.border = chip_thin_border
+        cell_net = ws.cell(row=net_row, column=14, value=neg_total + pos_total)
+        cell_net.font = template_font_bold
+        cell_net.border = chip_thin_border
+        ws.cell(row=net_row, column=15).border = chip_thin_border
+        chips_end_row = net_row
 
-    # === SECTION: X-Z columns - Seat summary (bottom right) ===
-    # Template has seats #1-24 in rows 48-71 (X-Z columns)
-    # After row operations: row 48 becomes 27 + rows_to_insert
-    # We need to:
-    # 1. Update seats #1-10 to reference correct rows
-    # 2. Clear seats #11-24
+    # Apply outer border to entire chip operations section
+    thick_side = Side(style='medium')
+    for r in range(chips_start_row, chips_end_row + 1):
+        for c in range(12, 16):  # L-O
+            cell = ws.cell(row=r, column=c)
+            left = thick_side if c == 12 else cell.border.left
+            right = thick_side if c == 15 else cell.border.right
+            top = thick_side if r == chips_start_row else cell.border.top
+            bottom = thick_side if r == chips_end_row else cell.border.bottom
+            cell.border = Border(left=left, right=right, top=top, bottom=bottom)
 
-    SEAT_SUMMARY_START_ROW = 27 + rows_to_insert
-
-    # Template structure for each seat:
-    # X column: seat number (#1, #2, etc.)
-    # Y column: reference to player name (row 1 for seats 1-10)
-    # Z column: reference to seat total (summary_start_row for seats 1-10)
-
-    # Seats #1-10 are in template rows 48-57 (now SEAT_SUMMARY_START_ROW to +9)
-    # Each seat uses columns B, D, F, H, J, L, N, P, R, T for data
-    seat_columns = ['B', 'D', 'F', 'H', 'J', 'L', 'N', 'P', 'R', 'T']
-
-    for seat_idx in range(10):
-        seat_no = seat_idx + 1
-        seat_row = SEAT_SUMMARY_START_ROW + seat_idx + 1  # +1 because row 48 has header
-        seat_col = seat_columns[seat_idx]
-
-        # X column (24): seat number
-        ws.cell(row=seat_row, column=24, value=f"#{seat_no}")
-
-        # Y column (25): player name reference (row 1 has seat headers, row 2+ has player data)
-        # We want to show the first player name which is at row 2
-        ws.cell(row=seat_row, column=25, value=f"={seat_col}2")
-
-        # Z column (26): seat total reference (at summary_start_row + 5 = Тотал row)
-        total_row = summary_start_row + 5  # Тотал is the 6th summary row
-        ws.cell(row=seat_row, column=26, value=f"={seat_col}{total_row}")
-
-    # Clear seats #11-24 (template rows 58-71, now SEAT_SUMMARY_START_ROW + 11 to +24)
-    for seat_idx in range(10, 24):
-        seat_row = SEAT_SUMMARY_START_ROW + seat_idx + 1
-        for col in range(24, 27):  # X, Y, Z
-            ws.cell(row=seat_row, column=col).value = None
-            ws.cell(row=seat_row, column=col).fill = no_fill
+    # X-Z columns are no longer used - already cleared in the bottom section clearing above
 
 
 def _create_table_states_sheet(

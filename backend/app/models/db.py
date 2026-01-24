@@ -92,6 +92,7 @@ class Session(Base):
     dealer = relationship("User", foreign_keys=[dealer_id])
     waiter = relationship("User", foreign_keys=[waiter_id])
     dealer_assignments = relationship("SessionDealerAssignment", back_populates="session", cascade="all, delete-orphan", order_by="SessionDealerAssignment.started_at")
+    waiter_assignments = relationship("SessionWaiterAssignment", back_populates="session", cascade="all, delete-orphan", order_by="SessionWaiterAssignment.started_at")
 
     # Note: We don't use a unique constraint on (table_id, date, status) because
     # it would prevent multiple closed sessions for the same table/date.
@@ -182,6 +183,29 @@ class SessionDealerAssignment(Base):
     __table_args__ = (
         Index("ix_session_dealer_assignment_session", "session_id"),
         Index("ix_session_dealer_assignment_dealer", "dealer_id"),
+    )
+
+
+class SessionWaiterAssignment(Base):
+    """
+    Tracks waiter assignments within a session.
+    A session can have multiple waiters over time, each with their own start/end time.
+    This enables accurate salary calculation for each waiter based on their actual working time.
+    """
+    __tablename__ = "session_waiter_assignments"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    session_id = Column(String(36), ForeignKey("sessions.id"), nullable=False, index=True)
+    waiter_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    started_at = Column(DateTime, nullable=False, default=utc_now)
+    ended_at = Column(DateTime, nullable=True)  # NULL means still active
+
+    session = relationship("Session", back_populates="waiter_assignments")
+    waiter = relationship("User")
+
+    __table_args__ = (
+        Index("ix_session_waiter_assignment_session", "session_id"),
+        Index("ix_session_waiter_assignment_waiter", "waiter_id"),
     )
 
 

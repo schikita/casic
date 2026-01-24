@@ -12,13 +12,15 @@ logger = logging.getLogger(__name__)
 
 from ..core.datetime_utils import to_utc, utc_now
 from ..core.deps import get_current_user, get_db, get_owner_id_for_filter, require_roles
-from ..models.db import ChipOp, ChipPurchase, DealerRakeEntry, Seat, SeatNameChange, Session, SessionDealerAssignment, Table, User
+from ..models.db import ChipOp, ChipPurchase, DealerRakeEntry, Seat, SeatNameChange, Session, SessionDealerAssignment, SessionWaiterAssignment, Table, User
 from ..models.schemas import (
     AddDealerIn,
+    AddWaiterIn,
     ChipCreateIn,
     CloseSessionIn,
     DealerRakeEntryOut,
     RemoveDealerIn,
+    RemoveWaiterIn,
     ReplaceDealerIn,
     SeatAssignIn,
     SeatHistoryEntryOut,
@@ -27,6 +29,7 @@ from ..models.schemas import (
     SessionCreateIn,
     SessionDealerAssignmentOut,
     SessionOut,
+    SessionWaiterAssignmentOut,
     StaffOut,
     UndoIn,
 )
@@ -156,7 +159,7 @@ def _require_session_access(user, session, db: DBSession | None = None):
 
 
 def _build_session_out(session: Session, db: DBSession) -> SessionOut:
-    """Build SessionOut with dealer assignments (rake from manual entries only)."""
+    """Build SessionOut with dealer and waiter assignments."""
 
     assignments = list(session.dealer_assignments or [])
 
@@ -195,6 +198,25 @@ def _build_session_out(session: Session, db: DBSession) -> SessionOut:
             )
         )
 
+    # Build waiter assignments
+    waiter_assignments = list(session.waiter_assignments or [])
+    waiter_assignments_out: list[SessionWaiterAssignmentOut] = []
+    for assignment in waiter_assignments:
+        waiter_hourly_rate = None
+        if assignment.waiter:
+            waiter_hourly_rate = int(cast(int, assignment.waiter.hourly_rate)) if assignment.waiter.hourly_rate else None
+
+        waiter_assignments_out.append(
+            SessionWaiterAssignmentOut(
+                id=int(cast(int, assignment.id)),
+                waiter_id=int(cast(int, assignment.waiter_id)),
+                waiter_username=cast(str, assignment.waiter.username) if assignment.waiter else "Unknown",
+                waiter_hourly_rate=waiter_hourly_rate,
+                started_at=cast(dt.datetime, assignment.started_at),
+                ended_at=cast(dt.datetime, assignment.ended_at) if assignment.ended_at else None,
+            )
+        )
+
     return SessionOut(
         id=str(cast(str, session.id)),
         table_id=int(cast(int, session.table_id)),
@@ -208,6 +230,7 @@ def _build_session_out(session: Session, db: DBSession) -> SessionOut:
         waiter=StaffOut.model_validate(session.waiter) if session.waiter else None,
         chips_in_play=int(cast(int, session.chips_in_play)) if session.chips_in_play is not None else None,
         dealer_assignments=dealer_assignments_out,
+        waiter_assignments=waiter_assignments_out,
     )
 
 
@@ -337,6 +360,7 @@ def get_open_session(
                 joinedload(Session.waiter),
                 joinedload(Session.dealer_assignments).joinedload(SessionDealerAssignment.dealer),
                 joinedload(Session.dealer_assignments).joinedload(SessionDealerAssignment.rake_entries),
+                joinedload(Session.waiter_assignments).joinedload(SessionWaiterAssignment.waiter),
             )
             .filter(Session.dealer_id == user.id, Session.status == "open")
             .order_by(Session.created_at.desc())
@@ -352,6 +376,7 @@ def get_open_session(
                 joinedload(Session.waiter),
                 joinedload(Session.dealer_assignments).joinedload(SessionDealerAssignment.dealer),
                 joinedload(Session.dealer_assignments).joinedload(SessionDealerAssignment.rake_entries),
+                joinedload(Session.waiter_assignments).joinedload(SessionWaiterAssignment.waiter),
             )
             .filter(Session.table_id == tid, Session.status == "open")
             .order_by(Session.created_at.desc())
@@ -448,6 +473,16 @@ def create_session(
         ended_at=None,
     )
     db.add(dealer_assignment)
+
+    # Create initial waiter assignment if waiter provided
+    if waiter_id is not None:
+        waiter_assignment = SessionWaiterAssignment(
+            session_id=cast(Any, s.id),
+            waiter_id=cast(Any, waiter_id),
+            started_at=s.created_at,
+            ended_at=None,
+        )
+        db.add(waiter_assignment)
 
     for seat_no in range(1, seats_count + 1):
         db.add(
@@ -964,28 +999,106 @@ def add_chips(
             db.add(purchase)
     else:
         # Credit purchase or negative amount (cashout)
-        seat.total = cast(Any, seat_total + delta)
 
-        op = ChipOp(
-            session_id=cast(Any, session_id),
-            seat_no=cast(Any, payload.seat_no),
-            amount=cast(Any, delta),
-        )
-        db.add(op)
-        db.flush()
+        # Handle cashout with optional credit deduction
+        if delta < 0 and payload.credit_to_deduct and payload.credit_to_deduct > 0:
+            # Validate credit amount
+            current_credit = _get_seat_credit(db, session_id, payload.seat_no)
+            if payload.credit_to_deduct > current_credit:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Cannot deduct {payload.credit_to_deduct} from credit. Current credit: {current_credit}"
+                )
 
-        # Only create ChipPurchase record for positive amounts (buyin)
-        if delta > 0:
-            purchase = ChipPurchase(
-                table_id=_as_int(s.table_id),
-                session_id=str(cast(str, s.id)),
-                seat_no=int(payload.seat_no),
-                amount=delta,
-                chip_op_id=_as_int(op.id),
-                created_by_user_id=_as_int(user.id),
-                payment_type=cast(Any, payload.payment_type),
+            # Validate that credit deduction doesn't exceed cashout amount
+            cashout_amount = abs(delta)
+            if payload.credit_to_deduct > cashout_amount:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Cannot deduct {payload.credit_to_deduct} from credit when cashing out {cashout_amount}"
+                )
+
+            # Validate that the cash portion doesn't exceed available cash
+            current_cash = max(0, seat_total - current_credit)
+            cash_portion = cashout_amount - payload.credit_to_deduct
+            if cash_portion > current_cash:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Cannot cashout {cashout_amount} with only {payload.credit_to_deduct} from credit. Player only has {current_cash} cash available, but {cash_portion} cash would be needed."
+                )
+
+            # Create ChipOp for the cashout (total chips removed from table)
+            op = ChipOp(
+                session_id=cast(Any, session_id),
+                seat_no=cast(Any, payload.seat_no),
+                amount=cast(Any, delta),
             )
-            db.add(purchase)
+            db.add(op)
+            db.flush()
+
+            # Split the cashout into credit and cash portions
+            credit_cashout = -payload.credit_to_deduct  # Negative amount
+            cash_cashout = delta + payload.credit_to_deduct  # Remaining cashout amount (also negative)
+
+            # Create separate ChipOp and ChipPurchase for credit portion
+            if credit_cashout != 0:
+                credit_op = ChipOp(
+                    session_id=cast(Any, session_id),
+                    seat_no=cast(Any, payload.seat_no),
+                    amount=cast(Any, 0),  # No additional chips removed (already counted in main op)
+                )
+                db.add(credit_op)
+                db.flush()
+
+                credit_purchase = ChipPurchase(
+                    table_id=_as_int(s.table_id),
+                    session_id=str(cast(str, s.id)),
+                    seat_no=int(payload.seat_no),
+                    amount=credit_cashout,
+                    chip_op_id=_as_int(credit_op.id),
+                    created_by_user_id=_as_int(user.id),
+                    payment_type=cast(Any, "credit"),
+                )
+                db.add(credit_purchase)
+
+            # Create ChipPurchase for cash portion using the main ChipOp
+            if cash_cashout != 0:
+                cash_purchase = ChipPurchase(
+                    table_id=_as_int(s.table_id),
+                    session_id=str(cast(str, s.id)),
+                    seat_no=int(payload.seat_no),
+                    amount=cash_cashout,
+                    chip_op_id=_as_int(op.id),
+                    created_by_user_id=_as_int(user.id),
+                    payment_type=cast(Any, "cash"),
+                )
+                db.add(cash_purchase)
+
+            seat.total = cast(Any, seat_total + delta)
+        else:
+            # Normal credit purchase or cashout without credit deduction
+            seat.total = cast(Any, seat_total + delta)
+
+            op = ChipOp(
+                session_id=cast(Any, session_id),
+                seat_no=cast(Any, payload.seat_no),
+                amount=cast(Any, delta),
+            )
+            db.add(op)
+            db.flush()
+
+            # Only create ChipPurchase record for positive amounts (buyin)
+            if delta > 0:
+                purchase = ChipPurchase(
+                    table_id=_as_int(s.table_id),
+                    session_id=str(cast(str, s.id)),
+                    seat_no=int(payload.seat_no),
+                    amount=delta,
+                    chip_op_id=_as_int(op.id),
+                    created_by_user_id=_as_int(user.id),
+                    payment_type=cast(Any, payload.payment_type),
+                )
+                db.add(purchase)
 
     # Auto-increment chips_in_play if total chips bought exceed current chips_in_play
     if delta > 0:
@@ -1000,7 +1113,27 @@ def add_chips(
 
     db.commit()
     db.refresh(seat)
-    return _build_seat_out(seat, db, session_id)
+
+    # Debug logging
+    import logging
+    logger = logging.getLogger(__name__)
+    result = _build_seat_out(seat, db, session_id)
+    logger.info(f"=== ADD CHIPS DEBUG ===")
+    logger.info(f"Session: {session_id}, Seat: {payload.seat_no}")
+    logger.info(f"Delta: {delta}, Credit to deduct: {payload.credit_to_deduct}")
+    logger.info(f"Result - Total: {result.total}, Credit: {result.credit}, Cash: {result.cash}")
+
+    # Query all ChipPurchase records for this seat to verify
+    all_purchases = db.query(ChipPurchase).filter(
+        ChipPurchase.session_id == session_id,
+        ChipPurchase.seat_no == payload.seat_no
+    ).all()
+    logger.info(f"All ChipPurchase records for seat {payload.seat_no}:")
+    for p in all_purchases:
+        logger.info(f"  - Amount: {p.amount}, Payment Type: {p.payment_type}, ChipOp ID: {p.chip_op_id}")
+    logger.info(f"=== END DEBUG ===")
+
+    return result
 
 
 @router.post(
@@ -1455,6 +1588,7 @@ def remove_dealer(
             joinedload(Session.waiter),
             joinedload(Session.dealer_assignments).joinedload(SessionDealerAssignment.dealer),
             joinedload(Session.dealer_assignments).joinedload(SessionDealerAssignment.rake_entries),
+            joinedload(Session.waiter_assignments).joinedload(SessionWaiterAssignment.waiter),
         )
         .filter(Session.id == session_id)
         .first()
@@ -1525,12 +1659,178 @@ def remove_dealer(
             joinedload(Session.waiter),
             joinedload(Session.dealer_assignments).joinedload(SessionDealerAssignment.dealer),
             joinedload(Session.dealer_assignments).joinedload(SessionDealerAssignment.rake_entries),
+            joinedload(Session.waiter_assignments).joinedload(SessionWaiterAssignment.waiter),
         )
         .filter(Session.id == session_id)
         .first()
     )
 
     logger.info(f"Dealer assignment {payload.assignment_id} ended in session {session_id}")
+    return _build_session_out(s, db)
+
+
+@router.post(
+    "/{session_id}/add-waiter",
+    response_model=SessionOut,
+    dependencies=[Depends(require_roles("superadmin", "table_admin"))],
+)
+def add_waiter(
+    session_id: str,
+    payload: AddWaiterIn,
+    db: DBSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """
+    Add a waiter to an open session (concurrent waiters allowed).
+    Only table_admin and superadmin can perform this action.
+    Unlike dealers, waiters can serve multiple sessions concurrently.
+    """
+    # Get the session with eager loading
+    s = (
+        db.query(Session)
+        .options(
+            joinedload(Session.dealer),
+            joinedload(Session.waiter),
+            joinedload(Session.dealer_assignments).joinedload(SessionDealerAssignment.dealer),
+            joinedload(Session.dealer_assignments).joinedload(SessionDealerAssignment.rake_entries),
+            joinedload(Session.waiter_assignments).joinedload(SessionWaiterAssignment.waiter),
+        )
+        .filter(Session.id == session_id)
+        .first()
+    )
+    if not s:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    if s.status != "open":
+        raise HTTPException(status_code=400, detail="Can only add waiter to open sessions")
+
+    _require_session_access(user, s, db)
+
+    # Validate waiter exists and is active
+    new_waiter = db.query(User).filter(
+        User.id == payload.waiter_id,
+        User.role == "waiter",
+        User.is_active == True,
+    ).first()
+    if not new_waiter:
+        raise HTTPException(status_code=400, detail="Invalid waiter selected")
+
+    # Check if waiter is already actively assigned to this session
+    existing_assignment = (
+        db.query(SessionWaiterAssignment)
+        .filter(
+            SessionWaiterAssignment.session_id == session_id,
+            SessionWaiterAssignment.waiter_id == payload.waiter_id,
+            SessionWaiterAssignment.ended_at.is_(None),
+        )
+        .first()
+    )
+    if existing_assignment:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Waiter {new_waiter.username} is already assigned to this session"
+        )
+
+    now = utc_now()
+
+    # Create new waiter assignment (concurrent with existing ones)
+    new_assignment = SessionWaiterAssignment(
+        session_id=cast(Any, session_id),
+        waiter_id=cast(Any, payload.waiter_id),
+        started_at=now,
+        ended_at=None,
+    )
+    db.add(new_assignment)
+
+    db.commit()
+
+    # Reload session with all relationships
+    s = (
+        db.query(Session)
+        .options(
+            joinedload(Session.dealer),
+            joinedload(Session.waiter),
+            joinedload(Session.dealer_assignments).joinedload(SessionDealerAssignment.dealer),
+            joinedload(Session.dealer_assignments).joinedload(SessionDealerAssignment.rake_entries),
+            joinedload(Session.waiter_assignments).joinedload(SessionWaiterAssignment.waiter),
+        )
+        .filter(Session.id == session_id)
+        .first()
+    )
+
+    logger.info(f"Waiter added to session {session_id}: {new_waiter.username}")
+    return _build_session_out(s, db)
+
+
+@router.post(
+    "/{session_id}/remove-waiter",
+    response_model=SessionOut,
+    dependencies=[Depends(require_roles("superadmin", "table_admin"))],
+)
+def remove_waiter(
+    session_id: str,
+    payload: RemoveWaiterIn,
+    db: DBSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """
+    Remove a waiter from an open session by ending their assignment.
+    Only table_admin and superadmin can perform this action.
+    Unlike dealers, we can remove the only waiter from a session.
+    """
+    # Get the session with eager loading
+    s = (
+        db.query(Session)
+        .options(
+            joinedload(Session.dealer),
+            joinedload(Session.waiter),
+            joinedload(Session.dealer_assignments).joinedload(SessionDealerAssignment.dealer),
+            joinedload(Session.dealer_assignments).joinedload(SessionDealerAssignment.rake_entries),
+            joinedload(Session.waiter_assignments).joinedload(SessionWaiterAssignment.waiter),
+        )
+        .filter(Session.id == session_id)
+        .first()
+    )
+    if not s:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    if s.status != "open":
+        raise HTTPException(status_code=400, detail="Can only remove waiter from open sessions")
+
+    _require_session_access(user, s, db)
+
+    # Find the assignment to end
+    assignment = db.query(SessionWaiterAssignment).filter(
+        SessionWaiterAssignment.id == payload.assignment_id,
+        SessionWaiterAssignment.session_id == session_id,
+    ).first()
+    if not assignment:
+        raise HTTPException(status_code=404, detail="Waiter assignment not found")
+
+    if assignment.ended_at is not None:
+        raise HTTPException(status_code=400, detail="This waiter assignment has already ended")
+
+    # End the assignment
+    now = utc_now()
+    assignment.ended_at = now
+
+    db.commit()
+
+    # Reload session with all relationships
+    s = (
+        db.query(Session)
+        .options(
+            joinedload(Session.dealer),
+            joinedload(Session.waiter),
+            joinedload(Session.dealer_assignments).joinedload(SessionDealerAssignment.dealer),
+            joinedload(Session.dealer_assignments).joinedload(SessionDealerAssignment.rake_entries),
+            joinedload(Session.waiter_assignments).joinedload(SessionWaiterAssignment.waiter),
+        )
+        .filter(Session.id == session_id)
+        .first()
+    )
+
+    logger.info(f"Waiter assignment {payload.assignment_id} ended in session {session_id}")
     return _build_session_out(s, db)
 
 

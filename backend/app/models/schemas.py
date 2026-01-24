@@ -126,6 +126,29 @@ class RemoveDealerIn(BaseModel):
     rake: int = Field(..., ge=0, description="Rake amount brought by this dealer during their shift")
 
 
+class SessionWaiterAssignmentOut(BaseModel):
+    """Output schema for waiter assignment within a session."""
+    id: int
+    waiter_id: int
+    waiter_username: str
+    waiter_hourly_rate: int | None = None  # Hourly rate for earnings calculation
+    started_at: dt.datetime
+    ended_at: dt.datetime | None = None
+
+    class Config:
+        from_attributes = True
+
+
+class AddWaiterIn(BaseModel):
+    """Input schema for adding a waiter to a session."""
+    waiter_id: int = Field(..., description="ID of the waiter to add")
+
+
+class RemoveWaiterIn(BaseModel):
+    """Input schema for removing a waiter from a session."""
+    assignment_id: int = Field(..., description="ID of the waiter assignment to end")
+
+
 class SessionOut(BaseModel):
     id: str
     table_id: int
@@ -140,6 +163,8 @@ class SessionOut(BaseModel):
     chips_in_play: int | None = None
     # List of all dealer assignments for this session (for salary tracking)
     dealer_assignments: list[SessionDealerAssignmentOut] = []
+    # List of all waiter assignments for this session (for salary tracking)
+    waiter_assignments: list[SessionWaiterAssignmentOut] = []
 
     class Config:
         from_attributes = True
@@ -185,6 +210,7 @@ class ChipCreateIn(BaseModel):
     seat_no: int = Field(ge=1, le=10)
     amount: int
     payment_type: str = Field(default="cash", pattern="^(cash|credit)$")  # "cash" or "credit"
+    credit_to_deduct: int | None = Field(default=None, ge=0, description="Optional amount of credit to deduct when cashing out")
 
 
 class UndoIn(BaseModel):

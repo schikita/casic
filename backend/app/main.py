@@ -180,6 +180,28 @@ def create_app() -> FastAPI:
                 conn.commit()
                 logger.info("Successfully added rake column to session_dealer_assignments")
 
+        # Migrate: create session_waiter_assignments table if missing
+        with engine.connect() as conn:
+            try:
+                conn.execute(text("SELECT id FROM session_waiter_assignments LIMIT 1"))
+            except Exception:
+                logger.info("Creating session_waiter_assignments table")
+                conn.execute(text("""
+                    CREATE TABLE session_waiter_assignments (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        session_id VARCHAR(36) NOT NULL,
+                        waiter_id INTEGER NOT NULL,
+                        started_at DATETIME NOT NULL,
+                        ended_at DATETIME,
+                        FOREIGN KEY (session_id) REFERENCES sessions(id),
+                        FOREIGN KEY (waiter_id) REFERENCES users(id)
+                    )
+                """))
+                conn.execute(text("CREATE INDEX ix_session_waiter_assignment_session ON session_waiter_assignments(session_id)"))
+                conn.execute(text("CREATE INDEX ix_session_waiter_assignment_waiter ON session_waiter_assignments(waiter_id)"))
+                conn.commit()
+                logger.info("Successfully created session_waiter_assignments table")
+
         # Migrate: create seat_name_changes table if missing
         with engine.connect() as conn:
             try:
@@ -213,6 +235,39 @@ def create_app() -> FastAPI:
                 conn.commit()
                 logger.info("Successfully added change_type column to seat_name_changes")
 
+        # Migrate: add owner_id column to tables if missing
+        with engine.connect() as conn:
+            try:
+                conn.execute(text("SELECT owner_id FROM tables LIMIT 1"))
+            except Exception:
+                logger.info("Adding owner_id column to tables")
+                conn.execute(text("ALTER TABLE tables ADD COLUMN owner_id INTEGER REFERENCES users(id)"))
+                conn.execute(text("CREATE INDEX ix_tables_owner ON tables(owner_id)"))
+                conn.commit()
+                logger.info("Successfully added owner_id column to tables")
+
+        # Migrate: add owner_id column to casino_balance_adjustments if missing
+        with engine.connect() as conn:
+            try:
+                conn.execute(text("SELECT owner_id FROM casino_balance_adjustments LIMIT 1"))
+            except Exception:
+                logger.info("Adding owner_id column to casino_balance_adjustments")
+                conn.execute(text("ALTER TABLE casino_balance_adjustments ADD COLUMN owner_id INTEGER REFERENCES users(id)"))
+                conn.execute(text("CREATE INDEX ix_balance_adjustment_owner ON casino_balance_adjustments(owner_id)"))
+                conn.commit()
+                logger.info("Successfully added owner_id column to casino_balance_adjustments")
+
+        # Migrate: add owner_id column to users if missing
+        with engine.connect() as conn:
+            try:
+                conn.execute(text("SELECT owner_id FROM users LIMIT 1"))
+            except Exception:
+                logger.info("Adding owner_id column to users")
+                conn.execute(text("ALTER TABLE users ADD COLUMN owner_id INTEGER REFERENCES users(id)"))
+                conn.execute(text("CREATE INDEX ix_user_owner ON users(owner_id)"))
+                conn.commit()
+                logger.info("Successfully added owner_id column to users")
+
         # Migrate: populate session_dealer_assignments from existing sessions with dealers
         db = SessionLocal()
         try:
@@ -241,6 +296,38 @@ def create_app() -> FastAPI:
             db.commit()
         except Exception as e:
             logger.warning(f"Error migrating dealer assignments: {e}")
+            db.rollback()
+        finally:
+            db.close()
+
+        # Migrate: populate session_waiter_assignments from existing sessions with waiters
+        db = SessionLocal()
+        try:
+            from .models.db import Session as SessionModel, SessionWaiterAssignment
+            # Check if there are sessions with waiters that don't have assignments yet
+            sessions_with_waiters = db.query(SessionModel).filter(
+                SessionModel.waiter_id.isnot(None)
+            ).all()
+
+            for session in sessions_with_waiters:
+                # Check if this session already has waiter assignments
+                existing = db.query(SessionWaiterAssignment).filter(
+                    SessionWaiterAssignment.session_id == session.id
+                ).first()
+                if not existing:
+                    # Create initial assignment from session's waiter_id
+                    ended_at = session.closed_at if session.status == "closed" else None
+                    assignment = SessionWaiterAssignment(
+                        session_id=session.id,
+                        waiter_id=session.waiter_id,
+                        started_at=session.created_at,
+                        ended_at=ended_at,
+                    )
+                    db.add(assignment)
+                    logger.info(f"Migrated waiter assignment for session {session.id}")
+            db.commit()
+        except Exception as e:
+            logger.warning(f"Error migrating waiter assignments: {e}")
             db.rollback()
         finally:
             db.close()

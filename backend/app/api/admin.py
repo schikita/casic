@@ -495,6 +495,34 @@ def create_balance_adjustment(
     )
 
 
+@router.delete(
+    "/balance-adjustments/{adjustment_id}",
+    dependencies=[Depends(require_roles("superadmin", "table_admin"))],
+)
+def delete_balance_adjustment(
+    adjustment_id: int,
+    db: DBSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict[str, str]:
+    """Delete a balance adjustment by ID."""
+    owner_id = get_owner_id_for_filter(current_user)
+
+    # Query with owner filter for multi-tenancy
+    query = db.query(CasinoBalanceAdjustment).filter(CasinoBalanceAdjustment.id == adjustment_id)
+
+    # Filter by owner_id for non-superadmin users (multi-tenancy)
+    if owner_id is not None:
+        query = query.filter(CasinoBalanceAdjustment.owner_id == owner_id)
+
+    adjustment = query.first()
+    if not adjustment:
+        raise HTTPException(status_code=404, detail="Balance adjustment not found")
+
+    db.delete(adjustment)
+    db.commit()
+    return {"message": "Balance adjustment deleted successfully"}
+
+
 @router.get(
     "/balance-adjustments",
     response_model=list[CasinoBalanceAdjustmentOut],
@@ -582,6 +610,7 @@ def list_closed_sessions(
             joinedload(Session.waiter),
             joinedload(Session.dealer_assignments).joinedload(SessionDealerAssignment.dealer),
             joinedload(Session.dealer_assignments).joinedload(SessionDealerAssignment.rake_entries).joinedload(DealerRakeEntry.created_by),
+            joinedload(Session.waiter_assignments).joinedload(SessionWaiterAssignment.waiter),
         )
         .filter(Session.table_id == tid, Session.status == "closed")
         .order_by(Session.created_at.desc())
