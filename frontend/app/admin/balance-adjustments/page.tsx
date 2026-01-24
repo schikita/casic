@@ -64,8 +64,7 @@ export default function BalanceAdjustmentsPage() {
     }
   }
 
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
+  async function handleSubmit(isIncome: boolean) {
     if (!amount || !comment.trim()) {
       setError("Заполните все поля");
       return;
@@ -77,6 +76,9 @@ export default function BalanceAdjustmentsPage() {
       return;
     }
 
+    // Apply sign based on isIncome parameter
+    const finalAmount = isIncome ? amountValue : -amountValue;
+
     setSubmitting(true);
     setError(null);
     try {
@@ -86,7 +88,7 @@ export default function BalanceAdjustmentsPage() {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          amount: amountValue,
+          amount: finalAmount,
           comment: comment.trim(),
         }),
       });
@@ -165,17 +167,24 @@ export default function BalanceAdjustmentsPage() {
         {showAddForm && (
           <div className="rounded-xl bg-zinc-900 p-4 mb-3">
             <div className="text-white font-semibold mb-3">Новая корректировка</div>
-            <form onSubmit={handleSubmit} className="space-y-3">
+            <div className="space-y-3">
               <div>
                 <label className="block text-xs text-zinc-400 mb-1">
-                  Сумма (положительная - доход, отрицательная - расход)
+                  Сумма
                 </label>
                 <input
                   type="number"
+                  inputMode="numeric"
                   value={amount}
-                  onChange={(e) => setAmount(e.target.value)}
+                  onChange={(e) => {
+                    // Only allow positive numbers
+                    const value = e.target.value;
+                    if (value === "" || (/^\d+$/.test(value) && parseInt(value, 10) >= 0)) {
+                      setAmount(value);
+                    }
+                  }}
                   className="w-full rounded-xl border border-zinc-700 bg-zinc-800 text-white px-3 py-3 text-base focus:outline-none focus:ring-2 focus:ring-white/15 placeholder-zinc-500"
-                  placeholder="Например: 1000 или -500"
+                  placeholder="Например: 1000"
                   disabled={submitting}
                 />
               </div>
@@ -194,27 +203,36 @@ export default function BalanceAdjustmentsPage() {
               </div>
               <div className="flex gap-2">
                 <button
-                  type="submit"
-                  disabled={submitting}
-                  className="flex-1 rounded-xl bg-green-600 text-white px-4 py-2 font-semibold active:bg-green-700 disabled:opacity-50 hover:bg-green-700/90 focus:outline-none focus:ring-2 focus:ring-white/15"
+                  type="button"
+                  onClick={() => handleSubmit(true)}
+                  disabled={submitting || !amount || !comment.trim()}
+                  className="flex-1 rounded-xl bg-green-600 text-white px-4 py-3 font-semibold active:bg-green-700 disabled:opacity-50 hover:bg-green-700/90 focus:outline-none focus:ring-2 focus:ring-white/15"
                 >
-                  {submitting ? "Сохранение..." : "Сохранить"}
+                  {submitting ? "..." : "Доход"}
                 </button>
                 <button
                   type="button"
-                  onClick={() => {
-                    setShowAddForm(false);
-                    setAmount("");
-                    setComment("");
-                    setError(null);
-                  }}
-                  disabled={submitting}
-                  className="flex-1 rounded-xl bg-zinc-700 text-white px-4 py-2 font-semibold active:bg-zinc-600 disabled:opacity-50 hover:bg-zinc-600/90 focus:outline-none focus:ring-2 focus:ring-white/15"
+                  onClick={() => handleSubmit(false)}
+                  disabled={submitting || !amount || !comment.trim()}
+                  className="flex-1 rounded-xl bg-red-600 text-white px-4 py-3 font-semibold active:bg-red-700 disabled:opacity-50 hover:bg-red-700/90 focus:outline-none focus:ring-2 focus:ring-white/15"
                 >
-                  Отмена
+                  {submitting ? "..." : "Расход"}
                 </button>
               </div>
-            </form>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowAddForm(false);
+                  setAmount("");
+                  setComment("");
+                  setError(null);
+                }}
+                disabled={submitting}
+                className="w-full rounded-xl bg-zinc-700 text-white px-4 py-2 font-semibold active:bg-zinc-600 disabled:opacity-50 hover:bg-zinc-600/90 focus:outline-none focus:ring-2 focus:ring-white/15"
+              >
+                Отмена
+              </button>
+            </div>
           </div>
         )}
 

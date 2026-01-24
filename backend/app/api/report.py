@@ -527,6 +527,31 @@ def _calculate_waiter_hours(
     return total_seconds / 3600.0
 
 
+def _get_waiter_time_range(
+    sessions: list[Session],
+    waiter_id: int,
+) -> tuple[dt.datetime | None, dt.datetime | None]:
+    """
+    Get the overall time range for a waiter's work period.
+    Returns (earliest_start, latest_end) or (None, None) if no sessions.
+    """
+    intervals: list[tuple[dt.datetime, dt.datetime]] = []
+
+    for s in sessions:
+        if s.waiter_id != waiter_id:
+            continue
+        start = cast(dt.datetime, s.created_at)
+        end = cast(dt.datetime, s.closed_at) if s.closed_at else dt.datetime.utcnow()
+        intervals.append((start, end))
+
+    if not intervals:
+        return None, None
+
+    earliest_start = min(start for start, _ in intervals)
+    latest_end = max(end for _, end in intervals)
+    return earliest_start, latest_end
+
+
 def _calculate_dealer_hours(
     sessions: list[Session],
     dealer_id: int,
@@ -804,20 +829,46 @@ def _fill_template_with_data(
     """
     Fill the template.xlsx with actual data.
 
-    Template structure (using rows 1-22 for max 10 seats):
+    Template structure (dynamic rows for seats):
     - Row 1: Seat number headers (we fill № 1 through № 10 in columns C,E,G,I,K,M,O,Q,S,U)
-    - Rows 2-15: Player name + chip purchases (even cols B,D,F,H,J,L,N,P,R,T = values)
-    - Rows 16-21: Summary rows (Жетоны(-), Жетоны(+), Результат, etc.)
+    - Rows 2-N: Player names + chip purchases (dynamically sized based on data)
+    - Rows N+1 to N+6: Summary rows (Жетоны(-), Жетоны(+), Результат, etc.)
 
-    - Rows 47-89: Staff section
-      - Columns A-F: Dealer blocks (2 cols per dealer: rake amount, time) - only for actual dealers
-      - Columns H-L: Waiter salaries (I=rate per row 49)
-      - Row 87: Totals
-
-    - Cell V63: "Яхцанут" label, W63: balance adjustment value
+    After seat section, staff section follows with adjusted row numbers.
     """
     if not sessions:
         return  # Leave template as-is if no data
+
+    from openpyxl.styles import PatternFill
+    import re
+
+    no_fill = PatternFill(fill_type=None)
+    MAX_SEATS = 10
+    TEMPLATE_DATA_ROWS = 14  # Template has rows 2-15 for data (14 rows)
+    TEMPLATE_SUMMARY_START_ROW = 16  # Original summary rows in template
+
+    # --- Step 1: Collect all data for each seat ---
+    # For each seat, we need to interleave player names (including changes) and chip purchases
+
+    # Get all session IDs for the report
+    session_ids = [cast(str, s.id) for s in sessions]
+
+    # Query all SeatNameChange records for these sessions
+    name_changes = db.query(SeatNameChange).filter(
+        SeatNameChange.session_id.in_(session_ids)
+    ).all()
+
+    # Group name changes by seat
+    name_changes_by_seat: dict[int, list[SeatNameChange]] = {}
+    for nc in name_changes:
+        seat_no = int(cast(int, nc.seat_no))
+        if seat_no not in name_changes_by_seat:
+            name_changes_by_seat[seat_no] = []
+        name_changes_by_seat[seat_no].append(nc)
+
+    # Sort name changes by time
+    for seat_no in name_changes_by_seat:
+        name_changes_by_seat[seat_no].sort(key=lambda nc: cast(dt.datetime, nc.created_at))
 
     # Collect all chip purchases grouped by seat
     purchases_by_seat: dict[int, list[ChipPurchase]] = {}
@@ -831,61 +882,185 @@ def _fill_template_with_data(
     for seat_no in purchases_by_seat:
         purchases_by_seat[seat_no].sort(key=lambda p: cast(dt.datetime, p.created_at))
 
-    # Get current player names by seat
-    player_by_seat: dict[int, str] = {}
+    # Get initial player names by seat (from Seat records)
+    initial_player_by_seat: dict[int, tuple[str, dt.datetime]] = {}
     for session in sessions:
         session_id = cast(str, session.id)
+        session_created = cast(dt.datetime, session.created_at)
         seats = seats_by_session.get(session_id, [])
         for seat in seats:
             seat_no = int(cast(int, seat.seat_no))
-            if seat.player_name:
-                player_by_seat[seat_no] = cast(str, seat.player_name)
+            # We need to find the initial player name (first name before any changes)
+            # If there are name changes, the first change's old_name is the initial
+            seat_name_changes = name_changes_by_seat.get(seat_no, [])
+            if seat_name_changes:
+                initial_name = seat_name_changes[0].old_name
+            else:
+                # No changes, use current name
+                initial_name = seat.player_name
+            if initial_name and seat_no not in initial_player_by_seat:
+                initial_player_by_seat[seat_no] = (cast(str, initial_name), session_created)
 
-    # === SECTION 1: Seats 1-10 (rows 1-22) ===
-    # Template has headers at row 1: C1=№13, E1=№14, etc.
-    # We repurpose for seats 1-10: C1=№1, E1=№2, G1=№3, etc.
-    # Value columns: B, D, F, H, J, L, N, P, R, T (for seats 1-10)
-    # Time columns: C, E, G, I, K, M, O, Q, S, U
-    SEAT_SECTION_DATA_START_ROW = 2   # Player name + purchases start at row 2
-    SEAT_SECTION_DATA_END_ROW = 15    # Up to row 15
-    MAX_SEATS = 10
-
+    # Build timeline of events for each seat: list of (timestamp, type, data)
+    # type: "player" for player name, "purchase" for chip purchase
+    seat_events: dict[int, list[tuple[dt.datetime, str, Any]]] = {}
     for seat_no in range(1, MAX_SEATS + 1):
-        # Column B=2 for seat 1, D=4 for seat 2, etc.
+        events: list[tuple[dt.datetime, str, Any]] = []
+
+        # Add initial player name if exists
+        if seat_no in initial_player_by_seat:
+            name, ts = initial_player_by_seat[seat_no]
+            events.append((ts, "player", name))
+
+        # Add name changes (new player names)
+        for nc in name_changes_by_seat.get(seat_no, []):
+            ts = cast(dt.datetime, nc.created_at)
+            change_type = nc.change_type or "name_change"
+            if change_type == "player_left":
+                # Player left - we could show this as "(left)" or skip
+                events.append((ts, "player_left", nc.old_name))
+            elif nc.new_name:
+                # New player took the seat
+                events.append((ts, "player", nc.new_name))
+
+        # Add chip purchases
+        for p in purchases_by_seat.get(seat_no, []):
+            ts = cast(dt.datetime, p.created_at)
+            events.append((ts, "purchase", p))
+
+        # Sort all events by timestamp
+        events.sort(key=lambda e: e[0])
+        seat_events[seat_no] = events
+
+    # --- Step 2: Calculate max data rows needed ---
+    max_data_rows = 0
+    for seat_no in range(1, MAX_SEATS + 1):
+        events = seat_events.get(seat_no, [])
+        max_data_rows = max(max_data_rows, len(events))
+
+    # Ensure at least TEMPLATE_DATA_ROWS (for when there's little data)
+    max_data_rows = max(max_data_rows, TEMPLATE_DATA_ROWS)
+
+    # --- Step 3: Insert rows if needed ---
+    rows_to_insert = max_data_rows - TEMPLATE_DATA_ROWS
+    if rows_to_insert > 0:
+        # Insert rows before the summary section (before row 16)
+        ws.insert_rows(TEMPLATE_SUMMARY_START_ROW, rows_to_insert)
+
+    # Calculate new summary row positions
+    summary_start_row = TEMPLATE_SUMMARY_START_ROW + rows_to_insert  # 16 + inserted rows
+    data_end_row = summary_start_row - 1  # Last data row
+
+    # --- Step 4: Fill seat headers and data ---
+    for seat_no in range(1, MAX_SEATS + 1):
         col_value = 2 + (seat_no - 1) * 2  # B=2, D=4, F=6, H=8, J=10, L=12, N=14, P=16, R=18, T=20
         col_time = col_value + 1            # C=3, E=5, G=7, I=9, K=11, M=13, O=15, Q=17, S=19, U=21
 
-        # Update seat header in row 1 (template has № 13, № 14, etc. - change to № 1, № 2, etc.)
+        # Update seat header in row 1
         ws.cell(row=1, column=col_time, value=f"№ {seat_no}")
 
-        # Fill player name in first data row (row 2)
-        player_name = player_by_seat.get(seat_no, "")
-        if player_name:
-            ws.cell(row=SEAT_SECTION_DATA_START_ROW, column=col_value, value=player_name)
+        # Fill events for this seat
+        events = seat_events.get(seat_no, [])
+        for i, (ts, event_type, data) in enumerate(events):
+            row = 2 + i  # Data starts at row 2
 
-        # Fill chip purchases (rows 3-15)
-        seat_purchases = purchases_by_seat.get(seat_no, [])
-        for i, p in enumerate(seat_purchases):
-            row = SEAT_SECTION_DATA_START_ROW + 1 + i  # Start at row 3
-            if row > SEAT_SECTION_DATA_END_ROW:
-                break
+            if event_type == "player":
+                # Player name
+                ws.cell(row=row, column=col_value, value=data)
+                ws.cell(row=row, column=col_time, value=ts.strftime("%H:%M"))
+            elif event_type == "player_left":
+                # Player left marker
+                ws.cell(row=row, column=col_value, value=f"({data} left)")
+                ws.cell(row=row, column=col_time, value=ts.strftime("%H:%M"))
+            elif event_type == "purchase":
+                # Chip purchase
+                # In DB: positive = player bought chips (player pays), negative = player cashout (casino pays)
+                # In XLS: show as-is (positive for player buying, negative for player cashing out)
+                p = data
+                amount = int(cast(int, p.amount))
+                ws.cell(row=row, column=col_value, value=amount)
+                ws.cell(row=row, column=col_time, value=ts.strftime("%H:%M"))
 
-            amount = int(cast(int, p.amount))
-            # Display as negative (chip purchase = player bought chips)
-            display_amount = -abs(amount) if amount > 0 else amount
-            ws.cell(row=row, column=col_value, value=display_amount)
-
-            # Timestamp
-            time_str = cast(dt.datetime, p.created_at).strftime("%H:%M")
-            ws.cell(row=row, column=col_time, value=time_str)
-
-    # Clear unused seat columns (seats 11-12 in template)
+    # --- Step 5: Clear unused seat columns (seats 11-12 in template) ---
     for seat_no in range(11, 13):
-        col_value = 2 + (seat_no - 1) * 2
-        col_time = col_value + 1
-        ws.cell(row=1, column=col_time, value=None)  # Clear header
+        col_value = 2 + (seat_no - 1) * 2  # V=22, X=24
+        col_time = col_value + 1            # W=23, Y=25
+        # Clear all rows in seat section (1 to summary_start_row + 5)
+        for row in range(1, summary_start_row + 6):
+            ws.cell(row=row, column=col_value).value = None
+            ws.cell(row=row, column=col_value).fill = no_fill
+            ws.cell(row=row, column=col_time).value = None
+            ws.cell(row=row, column=col_time).fill = no_fill
 
-    # === SECTION: Dealer rake entries (rows 47-86) ===
+    # --- Step 6: Copy labels to new summary rows ---
+    # Original template has labels in A39-A44, we need them at new summary position
+    # After inserting rows, original row 39 shifted to (39 + rows_to_insert)
+    src_label_rows = [39 + rows_to_insert, 40 + rows_to_insert, 41 + rows_to_insert,
+                      42 + rows_to_insert, 43 + rows_to_insert, 44 + rows_to_insert]
+    dst_label_rows = [summary_start_row, summary_start_row + 1, summary_start_row + 2,
+                      summary_start_row + 3, summary_start_row + 4, summary_start_row + 5]
+
+    for src_row, dst_row in zip(src_label_rows, dst_label_rows):
+        src_cell = ws.cell(row=src_row, column=1)
+        dst_cell = ws.cell(row=dst_row, column=1)
+        if src_cell.value:
+            dst_cell.value = src_cell.value
+            if src_cell.fill and src_cell.fill.patternType:
+                dst_cell.fill = src_cell.fill.copy()
+
+    # --- Step 7: Create summary formulas at new positions ---
+    # Summary formulas sum each row from B to X (columns 2-24) for seats 1-10 value columns
+    # But we only use even columns: B, D, F, H, J, L, N, P, R, T (seats 1-10)
+    for i, summary_row in enumerate(range(summary_start_row, summary_start_row + 6)):
+        ws.cell(row=summary_row, column=26, value=f"=SUM(B{summary_row}:X{summary_row})")
+
+    # --- Step 8: Update formulas throughout the sheet ---
+    # The rows after summary section need to reference the new summary rows
+    # Original Z39-Z44 should now reference Z{summary_start_row} to Z{summary_start_row+5}
+    old_summary_rows = [39 + rows_to_insert, 40 + rows_to_insert, 41 + rows_to_insert,
+                        42 + rows_to_insert, 43 + rows_to_insert, 44 + rows_to_insert]
+    new_summary_rows = [summary_start_row, summary_start_row + 1, summary_start_row + 2,
+                        summary_start_row + 3, summary_start_row + 4, summary_start_row + 5]
+
+    # Scan all cells and update formula references
+    # The dealer section starts at original row 47, now shifted by rows_to_insert
+    dealer_section_start = 45 + rows_to_insert
+    for row in range(dealer_section_start, dealer_section_start + 50):
+        for col in range(1, 30):
+            cell = ws.cell(row=row, column=col)
+            val = cell.value
+            if isinstance(val, str) and val.startswith('='):
+                new_val = val
+                # Replace references to old summary rows with new ones
+                for old_row, new_row in zip(old_summary_rows, new_summary_rows):
+                    new_val = re.sub(rf'\bZ{old_row}\b', f'Z{new_row}', new_val)
+                # Replace references to row 24 (player names from old template) with row 1
+                for c in 'BDFHJLNPRTXVX':
+                    new_val = re.sub(rf'\b{c}24\b', f'{c}1', new_val)
+                if new_val != val:
+                    cell.value = new_val
+
+    # --- Step 9: Delete unused rows from original template ---
+    # Original template had rows 24-44 for second seat section (21 rows)
+    # After inserting rows, these are at (24 + rows_to_insert) to (44 + rows_to_insert)
+    rows_24_44_start = 24 + rows_to_insert
+    ws.delete_rows(rows_24_44_start, 21)
+
+    # === SECTION: Dealer rake entries ===
+    # After row operations: original row 47 -> summary_start_row + 6 + gap (usually row 23)
+    # Then after deleting 21 rows, it shifts up by 21
+    # Net effect: original 47 -> (47 + rows_to_insert - 21) = 47 - 21 + rows_to_insert = 26 + rows_to_insert
+    # But we need to account for the actual position after all operations
+
+    # Calculate dealer section position:
+    # - Original template: dealer section at row 47
+    # - After inserting rows_to_insert: row 47 + rows_to_insert
+    # - After deleting 21 rows (rows 24-44): row 47 + rows_to_insert - 21 = 26 + rows_to_insert
+    DEALER_SECTION_START_ROW = 26 + rows_to_insert
+    DEALER_HEADER_ROW = 27 + rows_to_insert
+    DEALER_DATA_START_ROW = 28 + rows_to_insert
+    DEALER_DATA_END_ROW = 65 + rows_to_insert
+
     # Collect all dealers from sessions
     dealers_with_rake: dict[int, list[DealerRakeEntry]] = {}
     dealer_names: dict[int, str] = {}
@@ -904,21 +1079,16 @@ def _fill_template_with_data(
     sorted_dealer_ids = sorted(dealers_with_rake.keys())
     num_dealers = len(sorted_dealer_ids)
 
-    DEALER_SECTION_START_ROW = 47
-    DEALER_HEADER_ROW = 48
-    DEALER_DATA_START_ROW = 49
-    DEALER_DATA_END_ROW = 86
-
-    # Fill dealer names (row 47), headers (row 48), and rake entries (rows 49-86)
+    # Fill dealer names, headers, and rake entries
     for idx, dealer_id in enumerate(sorted_dealer_ids):
         col_rake = 1 + idx * 2   # A=1, C=3, E=5, ...
         col_time = col_rake + 1  # B=2, D=4, F=6, ...
 
-        # Dealer name in row 47
+        # Dealer name
         dealer_name = dealer_names.get(dealer_id, f"D{idx+1}")
         ws.cell(row=DEALER_SECTION_START_ROW, column=col_rake, value=dealer_name)
 
-        # Headers in row 48
+        # Headers
         ws.cell(row=DEALER_HEADER_ROW, column=col_rake, value="Рейк")
         ws.cell(row=DEALER_HEADER_ROW, column=col_time, value="Время")
 
@@ -936,27 +1106,408 @@ def _fill_template_with_data(
     for idx in range(num_dealers, 3):
         col_rake = 1 + idx * 2
         col_time = col_rake + 1
-        ws.cell(row=DEALER_SECTION_START_ROW, column=col_rake, value=None)
-        ws.cell(row=DEALER_HEADER_ROW, column=col_rake, value=None)
-        ws.cell(row=DEALER_HEADER_ROW, column=col_time, value=None)
+        # Clear dealer name row, header row, and all data rows
+        for row in range(DEALER_SECTION_START_ROW, DEALER_DATA_END_ROW + 3):
+            ws.cell(row=row, column=col_rake).value = None
+            ws.cell(row=row, column=col_rake).fill = no_fill
+            ws.cell(row=row, column=col_time).value = None
+            ws.cell(row=row, column=col_time).fill = no_fill
 
-    # === SECTION: Waiter salaries (columns H-L, row 49 for rates) ===
-    # Template: I48="официантка", I49/J49/K49/L49 = hourly rates
-    # Find waiters from staff list
+    # === DEALER TOTALS SECTION ===
+    # Template had totals at rows 87-89, after operations: 66-68 + rows_to_insert
+    DEALER_TOTALS_ROW = 66 + rows_to_insert
+    DEALER_TIP_ROW = 67 + rows_to_insert
+    DEALER_GROSS_ROW = 68 + rows_to_insert
+
+    # Add per-dealer totals
+    grand_total_rake = 0
+    for idx, dealer_id in enumerate(sorted_dealer_ids):
+        col_rake = 1 + idx * 2   # A=1, C=3, E=5, ...
+        col_letter = get_column_letter(col_rake)
+
+        # Calculate total for this dealer
+        rake_entries = dealers_with_rake[dealer_id]
+        dealer_total = sum(int(cast(int, entry.amount)) for entry in rake_entries)
+        grand_total_rake += dealer_total
+
+        # Write SUM formula for this dealer
+        ws.cell(row=DEALER_TOTALS_ROW, column=col_rake,
+                value=f"=SUM({col_letter}{DEALER_DATA_START_ROW}:{col_letter}{DEALER_DATA_END_ROW})")
+
+    # Grand total for all dealers (G column)
+    if num_dealers > 0:
+        total_formula_parts = []
+        for idx in range(num_dealers):
+            col_letter = get_column_letter(1 + idx * 2)
+            total_formula_parts.append(f"{col_letter}{DEALER_TOTALS_ROW}")
+        ws.cell(row=DEALER_TOTALS_ROW, column=7, value=f"=SUM({'+'.join(total_formula_parts)})")
+        ws.cell(row=DEALER_TOTALS_ROW - 1, column=7, value="Рэйк+Тип")
+
+    # === SECTION: Waiter salaries (columns H-L) ===
+    # Row position after insert and delete operations: 26 + rows_to_insert
+    WAITER_SECTION_START = 26 + rows_to_insert
+
+    # Header row for waiter section
+    ws.cell(row=WAITER_SECTION_START, column=8, value="Официанты")
+    ws.cell(row=WAITER_SECTION_START + 1, column=8, value="Имя")
+    ws.cell(row=WAITER_SECTION_START + 1, column=9, value="Ставка")
+    ws.cell(row=WAITER_SECTION_START + 1, column=10, value="Часов")
+    ws.cell(row=WAITER_SECTION_START + 1, column=11, value="Заработок")
+    ws.cell(row=WAITER_SECTION_START + 1, column=12, value="Период")
+
+    # Collect waiter work periods
+    waiter_periods: list[dict] = []
     waiters = [s for s in staff if s.role == "waiter"]
 
-    # Fill waiter rates in row 49 (columns I, J, K, L = 9, 10, 11, 12)
-    for idx, waiter in enumerate(waiters):
-        if idx >= 4:  # Max 4 waiter columns (I, J, K, L)
-            break
-        col = 9 + idx  # I=9, J=10, K=11, L=12
+    for waiter in waiters:
+        waiter_id = int(cast(int, waiter.id))
+        waiter_name = cast(str, waiter.username)
         hourly_rate = int(cast(int, waiter.hourly_rate)) if waiter.hourly_rate else 0
-        ws.cell(row=49, column=col, value=hourly_rate)
 
-    # === Balance adjustments (Яхцанут) - Cell W63 ===
-    total_adjustments = sum(int(cast(int, ba.amount)) for ba in balance_adjustments)
-    if total_adjustments != 0:
-        ws.cell(row=63, column=23, value=total_adjustments)  # W63
+        # Calculate hours and time range for this waiter
+        hours = _calculate_waiter_hours(sessions, waiter_id)
+        if hours > 0:
+            earnings = round(hours * hourly_rate)
+            start_time, end_time = _get_waiter_time_range(sessions, waiter_id)
+            time_range = ""
+            if start_time and end_time:
+                time_range = f"{start_time.strftime('%H:%M')} - {end_time.strftime('%H:%M')}"
+            waiter_periods.append({
+                "name": waiter_name,
+                "hourly_rate": hourly_rate,
+                "hours": round(hours, 2),
+                "earnings": earnings,
+                "time_range": time_range
+            })
+
+    # Fill waiter data
+    waiter_data_start_row = WAITER_SECTION_START + 2
+    for idx, wp in enumerate(waiter_periods):
+        row = waiter_data_start_row + idx
+        ws.cell(row=row, column=8, value=wp["name"])
+        ws.cell(row=row, column=9, value=wp["hourly_rate"])
+        ws.cell(row=row, column=10, value=wp["hours"])
+        ws.cell(row=row, column=11, value=wp["earnings"])
+        ws.cell(row=row, column=12, value=wp["time_range"])
+
+    # Totals row for waiters
+    waiter_totals_row = waiter_data_start_row + len(waiter_periods)
+    if waiter_periods:
+        ws.cell(row=waiter_totals_row, column=8, value="Итого")
+        total_waiter_hours = sum(wp["hours"] for wp in waiter_periods)
+        total_waiter_earnings = sum(wp["earnings"] for wp in waiter_periods)
+        ws.cell(row=waiter_totals_row, column=10, value=round(total_waiter_hours, 2))
+        ws.cell(row=waiter_totals_row, column=11, value=total_waiter_earnings)
+
+    # Clear old template waiter area cells that are no longer needed
+    # Template had: I49=100, J49=75, K49=75, L49=75 (hourly rates)
+    # Template had: row 87 with SUM formulas, row 88 with "Рабочие часы" labels
+    # These rows shift to: 28 + rows_to_insert, 66 + rows_to_insert, 67 + rows_to_insert
+
+    # Clear old hourly rate row (template row 49 -> 28 + rows_to_insert)
+    old_waiter_rate_row = 28 + rows_to_insert
+    for col in range(8, 13):  # H, I, J, K, L
+        if old_waiter_rate_row > waiter_totals_row:  # Only clear if below our new data
+            ws.cell(row=old_waiter_rate_row, column=col).value = None
+            ws.cell(row=old_waiter_rate_row, column=col).fill = no_fill
+
+    # Clear old SUM formulas row (template row 87 -> 66 + rows_to_insert)
+    old_sum_row = 66 + rows_to_insert
+    for col in range(8, 13):  # H, I, J, K, L
+        ws.cell(row=old_sum_row, column=col).value = None
+        ws.cell(row=old_sum_row, column=col).fill = no_fill
+
+    # Clear old "Рабочие часы" labels row (template row 88 -> 67 + rows_to_insert)
+    old_labels_row = 67 + rows_to_insert
+    for col in range(8, 13):  # H, I, J, K, L
+        ws.cell(row=old_labels_row, column=col).value = None
+        ws.cell(row=old_labels_row, column=col).fill = no_fill
+
+    # Clear additional rows that might have old template data (rows 47-49)
+    for clear_row in [26 + rows_to_insert - 1, 27 + rows_to_insert - 1]:
+        for col in range(8, 13):  # H, I, J, K, L
+            cell = ws.cell(row=clear_row, column=col)
+            if cell.value and isinstance(cell.value, str) and cell.value.startswith('='):
+                cell.value = None
+                cell.fill = no_fill
+
+    # === SECTION: N-P columns - Расходы, Бонусы, З/П тотал, Рейк ===
+    # Column M is empty, data starts at column N (14)
+    # Use template font: Roboto Mono, size 11
+
+    # After operations, template row 48 becomes 27 + rows_to_insert
+    NP_SECTION_START = 27 + rows_to_insert
+    template_font = Font(name="Roboto Mono", size=11)
+    template_font_bold = Font(name="Roboto Mono", size=11, bold=True)
+
+    # Clear ALL old template data in M-P columns (13-16)
+    no_border = Border()
+    TEMPLATE_CLEAR_START = 27 + rows_to_insert
+    TEMPLATE_CLEAR_END = 70 + rows_to_insert
+
+    for clear_row in range(TEMPLATE_CLEAR_START, TEMPLATE_CLEAR_END + 1):
+        for col in range(13, 17):  # M, N, O, P columns
+            cell = ws.cell(row=clear_row, column=col)
+            cell.value = None
+            cell.fill = no_fill
+            cell.border = no_border
+            cell.font = Font()
+            cell.alignment = Alignment()
+
+    # Prepare data
+    negative_adjustments = [ba for ba in balance_adjustments if int(cast(int, ba.amount)) < 0]
+    positive_adjustments = [ba for ba in balance_adjustments if int(cast(int, ba.amount)) > 0]
+
+    # Calculate staff salaries
+    staff_salaries: list[tuple[str, str, int]] = []  # (name, role, earnings)
+    total_staff_salary = 0
+
+    dealers = [s for s in staff if s.role == "dealer"]
+    for dealer in dealers:
+        dealer_id = int(cast(int, dealer.id))
+        dealer_name = cast(str, dealer.username)
+        hourly_rate = int(cast(int, dealer.hourly_rate)) if dealer.hourly_rate else 0
+        hours = _calculate_dealer_hours(sessions, dealer_id)
+        if hours > 0:
+            earnings = round(hours * hourly_rate)
+            total_staff_salary += earnings
+            staff_salaries.append((dealer_name, "Дилер", earnings))
+
+    for waiter in waiters:
+        waiter_id = int(cast(int, waiter.id))
+        waiter_name = cast(str, waiter.username)
+        hourly_rate = int(cast(int, waiter.hourly_rate)) if waiter.hourly_rate else 0
+        hours = _calculate_waiter_hours(sessions, waiter_id)
+        if hours > 0:
+            earnings = round(hours * hourly_rate)
+            total_staff_salary += earnings
+            staff_salaries.append((waiter_name, "Официант", earnings))
+
+    # Write all data starting from NP_SECTION_START, column N (14)
+    current_row = NP_SECTION_START
+
+    # === РАСХОДЫ (Expenses) ===
+    ws.cell(row=current_row, column=14, value="РАСХОДЫ")
+    ws.cell(row=current_row, column=14).font = template_font_bold
+    current_row += 1
+
+    if negative_adjustments:
+        for adj in negative_adjustments:
+            amount = int(cast(int, adj.amount))
+            comment = cast(str, adj.comment) if adj.comment else ""
+            ws.cell(row=current_row, column=14, value=comment[:30])
+            ws.cell(row=current_row, column=14).font = template_font
+            ws.cell(row=current_row, column=15, value=amount)
+            ws.cell(row=current_row, column=15).font = template_font
+            current_row += 1
+        expenses_total = sum(int(cast(int, ba.amount)) for ba in negative_adjustments)
+        ws.cell(row=current_row, column=14, value="Итого:")
+        ws.cell(row=current_row, column=14).font = template_font_bold
+        ws.cell(row=current_row, column=15, value=expenses_total)
+        ws.cell(row=current_row, column=15).font = template_font_bold
+        current_row += 1
+    else:
+        ws.cell(row=current_row, column=14, value="(нет)")
+        ws.cell(row=current_row, column=14).font = template_font
+        current_row += 1
+
+    current_row += 1  # Empty row
+
+    # === БОНУСЫ (Bonuses) ===
+    ws.cell(row=current_row, column=14, value="БОНУСЫ")
+    ws.cell(row=current_row, column=14).font = template_font_bold
+    current_row += 1
+
+    if positive_adjustments:
+        for adj in positive_adjustments:
+            amount = int(cast(int, adj.amount))
+            comment = cast(str, adj.comment) if adj.comment else ""
+            ws.cell(row=current_row, column=14, value=comment[:30])
+            ws.cell(row=current_row, column=14).font = template_font
+            ws.cell(row=current_row, column=15, value=amount)
+            ws.cell(row=current_row, column=15).font = template_font
+            current_row += 1
+        bonuses_total = sum(int(cast(int, ba.amount)) for ba in positive_adjustments)
+        ws.cell(row=current_row, column=14, value="Итого:")
+        ws.cell(row=current_row, column=14).font = template_font_bold
+        ws.cell(row=current_row, column=15, value=bonuses_total)
+        ws.cell(row=current_row, column=15).font = template_font_bold
+        current_row += 1
+    else:
+        ws.cell(row=current_row, column=14, value="(нет)")
+        ws.cell(row=current_row, column=14).font = template_font
+        current_row += 1
+
+    current_row += 1  # Empty row
+
+    # === З/П ТОТАЛ (Staff Salaries) ===
+    ws.cell(row=current_row, column=14, value="З/П ТОТАЛ")
+    ws.cell(row=current_row, column=14).font = template_font_bold
+    current_row += 1
+
+    if staff_salaries:
+        for name, role, earnings in staff_salaries:
+            ws.cell(row=current_row, column=14, value=name)
+            ws.cell(row=current_row, column=14).font = template_font
+            ws.cell(row=current_row, column=15, value=role)
+            ws.cell(row=current_row, column=15).font = template_font
+            ws.cell(row=current_row, column=16, value=earnings)
+            ws.cell(row=current_row, column=16).font = template_font
+            current_row += 1
+        ws.cell(row=current_row, column=14, value="Итого:")
+        ws.cell(row=current_row, column=14).font = template_font_bold
+        ws.cell(row=current_row, column=16, value=total_staff_salary)
+        ws.cell(row=current_row, column=16).font = template_font_bold
+        current_row += 1
+    else:
+        ws.cell(row=current_row, column=14, value="(нет)")
+        ws.cell(row=current_row, column=14).font = template_font
+        current_row += 1
+
+    current_row += 1  # Blank line
+
+    # === РЕЙК БРУТТО / РЕЙК НЕТТО ===
+    ws.cell(row=current_row, column=14, value="Рейк брутто")
+    ws.cell(row=current_row, column=14).font = template_font_bold
+    ws.cell(row=current_row, column=15, value=grand_total_rake)
+    ws.cell(row=current_row, column=15).font = template_font_bold
+    current_row += 1
+
+    # Calculate total expenses (sum of negative balance adjustments - already negative)
+    total_expenses = sum(int(cast(int, ba.amount)) for ba in negative_adjustments) if negative_adjustments else 0
+
+    # Net rake = gross rake + expenses (expenses are negative, so we add them)
+    net_rake = grand_total_rake + total_expenses
+
+    ws.cell(row=current_row, column=14, value="Рейк нетто")
+    ws.cell(row=current_row, column=14).font = template_font_bold
+    ws.cell(row=current_row, column=15, value=net_rake)
+    ws.cell(row=current_row, column=15).font = template_font_bold
+    current_row += 1
+
+    # === SECTION: R-U columns - Chip operations (+/-) ===
+    # Column Q (17) is empty, data starts at column R (18)
+    # R = (-) amount, S = (-) time, T = (+) amount, U = (+) time
+
+    QT_SECTION_START = 27 + rows_to_insert  # Template row 48
+
+    # Clear old template data in Q-U columns (17-21)
+    for clear_row in range(QT_SECTION_START, QT_SECTION_START + 30):
+        for col in range(17, 22):  # Q, R, S, T, U
+            cell = ws.cell(row=clear_row, column=col)
+            cell.value = None
+            cell.fill = no_fill
+            cell.border = no_border
+            cell.font = Font()
+
+    # Header row - columns S-T (19-20)
+    ws.cell(row=QT_SECTION_START, column=19, value="Жетоны")
+    ws.cell(row=QT_SECTION_START, column=19).font = template_font_bold
+    ws.cell(row=QT_SECTION_START, column=20, value="на столе")
+    ws.cell(row=QT_SECTION_START, column=20).font = template_font_bold
+
+    # Column headers row (2 rows down)
+    headers_row = QT_SECTION_START + 2
+    ws.cell(row=headers_row, column=18, value="(-)")
+    ws.cell(row=headers_row, column=18).font = template_font_bold
+    ws.cell(row=headers_row, column=20, value="(+)")
+    ws.cell(row=headers_row, column=20).font = template_font_bold
+
+    # Separate chip purchases into negative (cashouts) and positive (buy-ins)
+    negative_ops: list[tuple[int, dt.datetime]] = []  # (amount, timestamp)
+    positive_ops: list[tuple[int, dt.datetime]] = []  # (amount, timestamp)
+
+    for p in purchases:
+        amount = int(cast(int, p.amount))
+        ts = cast(dt.datetime, p.created_at)
+        if amount < 0:
+            negative_ops.append((amount, ts))
+        elif amount > 0:
+            positive_ops.append((amount, ts))
+
+    # Sort by timestamp
+    negative_ops.sort(key=lambda x: x[1])
+    positive_ops.sort(key=lambda x: x[1])
+
+    # Write data rows
+    data_start_row = headers_row + 1
+    max_ops = max(len(negative_ops), len(positive_ops)) if negative_ops or positive_ops else 0
+
+    for i in range(max_ops):
+        row = data_start_row + i
+
+        # Negative (cashout) - columns R (18) and S (19)
+        if i < len(negative_ops):
+            amount, ts = negative_ops[i]
+            ws.cell(row=row, column=18, value=amount)
+            ws.cell(row=row, column=18).font = template_font
+            ws.cell(row=row, column=19, value=ts.strftime("%H:%M"))
+            ws.cell(row=row, column=19).font = template_font
+
+        # Positive (buy-in) - columns T (20) and U (21)
+        if i < len(positive_ops):
+            amount, ts = positive_ops[i]
+            ws.cell(row=row, column=20, value=amount)
+            ws.cell(row=row, column=20).font = template_font
+            ws.cell(row=row, column=21, value=ts.strftime("%H:%M"))
+            ws.cell(row=row, column=21).font = template_font
+
+    # Totals row
+    if max_ops > 0:
+        totals_row = data_start_row + max_ops
+        neg_total = sum(op[0] for op in negative_ops)
+        pos_total = sum(op[0] for op in positive_ops)
+
+        ws.cell(row=totals_row, column=18, value=neg_total)
+        ws.cell(row=totals_row, column=18).font = template_font_bold
+        ws.cell(row=totals_row, column=20, value=pos_total)
+        ws.cell(row=totals_row, column=20).font = template_font_bold
+
+        # Net change row
+        net_row = totals_row + 1
+        ws.cell(row=net_row, column=20, value=neg_total + pos_total)
+        ws.cell(row=net_row, column=20).font = template_font_bold
+
+    # === SECTION: X-Z columns - Seat summary (bottom right) ===
+    # Template has seats #1-24 in rows 48-71 (X-Z columns)
+    # After row operations: row 48 becomes 27 + rows_to_insert
+    # We need to:
+    # 1. Update seats #1-10 to reference correct rows
+    # 2. Clear seats #11-24
+
+    SEAT_SUMMARY_START_ROW = 27 + rows_to_insert
+
+    # Template structure for each seat:
+    # X column: seat number (#1, #2, etc.)
+    # Y column: reference to player name (row 1 for seats 1-10)
+    # Z column: reference to seat total (summary_start_row for seats 1-10)
+
+    # Seats #1-10 are in template rows 48-57 (now SEAT_SUMMARY_START_ROW to +9)
+    # Each seat uses columns B, D, F, H, J, L, N, P, R, T for data
+    seat_columns = ['B', 'D', 'F', 'H', 'J', 'L', 'N', 'P', 'R', 'T']
+
+    for seat_idx in range(10):
+        seat_no = seat_idx + 1
+        seat_row = SEAT_SUMMARY_START_ROW + seat_idx + 1  # +1 because row 48 has header
+        seat_col = seat_columns[seat_idx]
+
+        # X column (24): seat number
+        ws.cell(row=seat_row, column=24, value=f"#{seat_no}")
+
+        # Y column (25): player name reference (row 1 has seat headers, row 2+ has player data)
+        # We want to show the first player name which is at row 2
+        ws.cell(row=seat_row, column=25, value=f"={seat_col}2")
+
+        # Z column (26): seat total reference (at summary_start_row + 5 = Тотал row)
+        total_row = summary_start_row + 5  # Тотал is the 6th summary row
+        ws.cell(row=seat_row, column=26, value=f"={seat_col}{total_row}")
+
+    # Clear seats #11-24 (template rows 58-71, now SEAT_SUMMARY_START_ROW + 11 to +24)
+    for seat_idx in range(10, 24):
+        seat_row = SEAT_SUMMARY_START_ROW + seat_idx + 1
+        for col in range(24, 27):  # X, Y, Z
+            ws.cell(row=seat_row, column=col).value = None
+            ws.cell(row=seat_row, column=col).fill = no_fill
 
 
 def _create_table_states_sheet(

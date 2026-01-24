@@ -189,7 +189,7 @@ export default function SeatActionSheet({
             <div className="text-xs text-zinc-500">Игрок</div>
             {(playerName || playerChips > 0) && (
               <button
-                className="text-xs text-orange-400 font-medium px-2 py-1 rounded-lg hover:bg-orange-900/30 active:bg-orange-900/50 disabled:opacity-50"
+                className="text-sm text-white font-semibold px-4 py-2 rounded-xl bg-orange-600 hover:bg-orange-700 active:bg-orange-800 disabled:opacity-50"
                 onClick={async () => {
                   setClearing(true);
                   try {
