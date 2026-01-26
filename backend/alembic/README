@@ -1,0 +1,14 @@
+Generic single-database configuration for Alembic migrations.
+
+To create a new migration after changing models:
+    alembic revision --autogenerate -m "description of changes"
+
+To apply migrations:
+    alembic upgrade head
+
+To see migration history:
+    alembic history
+
+To see current version:
+    alembic current
+

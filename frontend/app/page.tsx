@@ -5,7 +5,6 @@ import SeatGrid from "@/components/SeatGrid";
 import SeatActionSheet from "@/components/SeatActionSheet";
 import StartSessionModal from "@/components/StartSessionModal";
 import CashConfirmationModal from "@/components/CashConfirmationModal";
-import CreditDeductionModal from "@/components/CreditDeductionModal";
 import SessionCloseConfirmationModal from "@/components/SessionCloseConfirmationModal";
 import ReplaceDealerModal from "@/components/ReplaceDealerModal";
 import AddDealerModal from "@/components/AddDealerModal";
@@ -43,11 +42,7 @@ export default function HomePage() {
   const [error, setError] = useState<string | null>(null);
   const [showStartModal, setShowStartModal] = useState<boolean>(false);
   const [showCashModal, setShowCashModal] = useState<boolean>(false);
-  const [showCreditDeductionModal, setShowCreditDeductionModal] = useState<boolean>(false);
   const [pendingChipAmount, setPendingChipAmount] = useState<number | null>(null);
-  const [pendingCreditAmount, setPendingCreditAmount] = useState<number>(0);
-  const [pendingCashAmount, setPendingCashAmount] = useState<number>(0);
-  const [pendingSeatNo, setPendingSeatNo] = useState<number | null>(null);
   const [showCloseModal, setShowCloseModal] = useState<boolean>(false);
   const [creditAmount, setCreditAmount] = useState<number>(0);
   const [creditByPlayer, setCreditByPlayer] = useState<Array<{ seat_no: number; player_name: string | null; amount: number }>>([]);
@@ -213,6 +208,42 @@ export default function HomePage() {
     }
   }, [session, activeSeatNo, updateSeatInState]);
 
+  const returnCredit = useCallback(async (amount: number) => {
+    if (!session || !activeSeatNo) return;
+    setError(null);
+    setBusy(true);
+    try {
+      // Add chips with cash payment type - this will automatically pay off credit
+      const updated = await apiJson<Seat>(
+        "/api/sessions/" + session.id + "/chips",
+        {
+          method: "POST",
+          body: JSON.stringify({
+            seat_no: activeSeatNo,
+            amount: amount,
+            payment_type: "cash",
+          }),
+        }
+      );
+      updateSeatInState(updated);
+
+      // Refresh session and rake to get updated data
+      const url = buildOpenSessionUrl(user?.role, session.table_id);
+      const [updatedSession, rakeData] = await Promise.all([
+        apiJson<Session>(url),
+        apiJson<{ total_rake: number; total_buyins: number; total_cashouts: number; total_credit: number }>("/api/sessions/" + session.id + "/rake"),
+      ]);
+      if (updatedSession) {
+        setSession(updatedSession);
+      }
+      setRake(rakeData);
+    } catch (e) {
+      setError(getErrorMessage(e) || "Ошибка");
+    } finally {
+      setBusy(false);
+    }
+  }, [session, activeSeatNo, updateSeatInState, user]);
+
   const confirmChipPurchase = useCallback(async (amount: number, paymentType: "cash" | "credit", creditToDeduct?: number, seatNo?: number) => {
     console.log("=== confirmChipPurchase called ===");
     console.log("amount:", amount);
@@ -283,7 +314,6 @@ export default function HomePage() {
       setRake(rakeData);
 
       setShowCashModal(false);
-      setShowCreditDeductionModal(false);
       setPendingChipAmount(null);
       setActiveSeatNo(null); // Close the SeatActionSheet
     } catch (e) {
@@ -298,28 +328,15 @@ export default function HomePage() {
     setError(null);
 
     // Only show cash/credit modal for positive amounts (buyin)
+    // Negative amounts are processed directly without affecting credit
     if (amount > 0) {
       setPendingChipAmount(amount);
       setShowCashModal(true);
     } else {
-      // For cashout, check if player has credit and show credit deduction modal
-      const activeSeat = seats.find((s) => s.seat_no === activeSeatNo);
-      const currentCredit = activeSeat?.credit ?? 0;
-      const currentCash = activeSeat?.cash ?? 0;
-
-      // Only show credit deduction modal for table_admin when there's credit
-      if (currentCredit > 0 && (user?.role === "table_admin" || user?.role === "superadmin")) {
-        setPendingChipAmount(amount);
-        setPendingCreditAmount(currentCredit); // Store the credit amount
-        setPendingCashAmount(currentCash); // Store the cash amount
-        setPendingSeatNo(activeSeatNo); // Store the seat number
-        setShowCreditDeductionModal(true);
-      } else {
-        // No credit or not table_admin, process directly
-        confirmChipPurchase(amount, "cash");
-      }
+      // For negative amounts (chip removal), process directly without credit deduction
+      confirmChipPurchase(amount, "cash");
     }
-  }, [session, activeSeatNo, seats, user, confirmChipPurchase]);
+  }, [session, activeSeatNo, confirmChipPurchase]);
 
   const showCloseConfirmation = useCallback(async () => {
     if (!session) return;
@@ -380,7 +397,7 @@ export default function HomePage() {
   }, [tableId, loadOpenSession]);
 
   const totals = useMemo(() => {
-    const chips = seats.reduce((acc, s) => acc + (s.total_chips_played || 0), 0);
+    const chips = seats.reduce((acc, s) => acc + (s.total || 0), 0);
     return { chips };
   }, [seats]);
 
@@ -906,6 +923,7 @@ export default function HomePage() {
               onAssign={assignPlayer}
               onAdd={addChips}
               onClear={clearSeat}
+              onReturnCredit={returnCredit}
             />
 
             <CashConfirmationModal
@@ -918,38 +936,6 @@ export default function HomePage() {
               onCancel={() => {
                 setShowCashModal(false);
                 setPendingChipAmount(null);
-              }}
-              loading={busy}
-            />
-
-            <CreditDeductionModal
-              open={showCreditDeductionModal}
-              cashoutAmount={Math.abs(pendingChipAmount ?? 0)}
-              currentCredit={pendingCreditAmount}
-              currentCash={pendingCashAmount}
-              playerName={activeSeat?.player_name ?? null}
-              seatNo={activeSeatNo ?? 0}
-              onConfirm={async (creditToDeduct) => {
-                console.log("=== Modal onConfirm handler ===");
-                console.log("creditToDeduct:", creditToDeduct);
-                console.log("pendingChipAmount:", pendingChipAmount);
-                console.log("pendingSeatNo:", pendingSeatNo);
-                if (pendingChipAmount && pendingSeatNo !== null) {
-                  // Call API with explicit seat number, THEN close modal and reset state
-                  await confirmChipPurchase(pendingChipAmount, "cash", creditToDeduct, pendingSeatNo);
-                  setShowCreditDeductionModal(false);
-                  setPendingChipAmount(null);
-                  setPendingCreditAmount(0);
-                  setPendingCashAmount(0);
-                  setPendingSeatNo(null);
-                }
-              }}
-              onCancel={() => {
-                setShowCreditDeductionModal(false);
-                setPendingChipAmount(null);
-                setPendingCreditAmount(0);
-                setPendingCashAmount(0);
-                setPendingSeatNo(null);
               }}
               loading={busy}
             />

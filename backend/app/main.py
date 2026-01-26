@@ -11,6 +11,7 @@ from .api import admin_router, auth_router, sessions_router, report_router
 from .core.config import settings
 from .core.db import SessionLocal, engine
 from .core.security import get_password_hash
+from .core.migrations import run_migrations, stamp_database, get_current_revision
 from .models.db import Base, User
 
 
@@ -68,8 +69,39 @@ def create_app() -> FastAPI:
     @app.on_event("startup")
     def startup():
         logger.info("Starting application...")
-        Base.metadata.create_all(bind=engine)
+
+        # Check if database has been initialized with migrations
+        current_rev = get_current_revision()
+
+        if current_rev is None:
+            # Database exists but hasn't been stamped with a migration version yet
+            # This means it's an existing database that was created with create_all()
+            # We need to stamp it with the initial migration without running it
+            logger.info("Existing database detected without migration version")
+            logger.info("Stamping database with initial migration (001)...")
+            try:
+                stamp_database("001")
+                logger.info("Database stamped successfully")
+            except Exception as e:
+                logger.warning(f"Could not stamp database: {e}")
+                logger.info("Falling back to create_all() for database initialization")
+                Base.metadata.create_all(bind=engine)
+
+        # Run any pending migrations
+        try:
+            run_migrations()
+        except Exception as e:
+            logger.error(f"Migration failed: {e}")
+            logger.info("Falling back to create_all() for database initialization")
+            Base.metadata.create_all(bind=engine)
+
         logger.info("Database tables created/verified")
+
+        # ============================================================================
+        # LEGACY MANUAL MIGRATIONS (kept for backward compatibility)
+        # These are kept to ensure smooth transition for existing databases.
+        # New schema changes should be added as Alembic migrations instead.
+        # ============================================================================
 
         # Migrate: add dealer_id and waiter_id columns to sessions if missing
         with engine.connect() as conn:

@@ -610,6 +610,8 @@ def clear_seat(
         db.add(name_change)
 
     # Delete all chip purchases for this seat (new player starts fresh)
+    # This is needed so the new player doesn't inherit credit from the previous player.
+    # Note: chip_ops are preserved for historical reporting in Excel reports.
     db.query(ChipPurchase).filter(
         ChipPurchase.session_id == session_id,
         ChipPurchase.seat_no == seat_no,
@@ -811,17 +813,17 @@ def get_non_cash_purchases(
         raise HTTPException(status_code=404, detail="Session not found")
     _require_session_access(user, s, db)
 
+    # Get ALL credit purchases (including negative payoffs)
     purchases = (
         db.query(ChipPurchase)
         .filter(
             ChipPurchase.session_id == session_id,
             ChipPurchase.payment_type == "credit",
-            ChipPurchase.amount > 0,
         )
         .all()
     )
 
-    # Group credit by seat_no to get per-player credit
+    # Group credit by seat_no to get per-player credit (sum includes negative payoffs)
     credit_by_seat = {}
     for p in purchases:
         seat_no = int(cast(int, p.seat_no))
@@ -832,18 +834,19 @@ def get_non_cash_purchases(
     seats = db.query(Seat).filter(Seat.session_id == session_id).all()
     seat_info = {int(cast(int, s.seat_no)): s for s in seats}
 
-    # Build response with player names
+    # Build response with player names (only include seats with credit > 0)
     credit_list = []
     total_credit = 0
     for seat_no, amount in sorted(credit_by_seat.items()):
-        seat = seat_info.get(seat_no)
-        player_name = seat.player_name if seat else None
-        credit_list.append({
-            "seat_no": seat_no,
-            "player_name": player_name,
-            "amount": amount
-        })
-        total_credit += amount
+        if amount > 0:  # Only include seats with outstanding credit
+            seat = seat_info.get(seat_no)
+            player_name = seat.player_name if seat else None
+            credit_list.append({
+                "seat_no": seat_no,
+                "player_name": player_name,
+                "amount": amount
+            })
+            total_credit += amount
 
     return {
         "total_credit": total_credit,

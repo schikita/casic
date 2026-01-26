@@ -4,6 +4,7 @@ import { useMemo, useState, useEffect, useCallback } from "react";
 import type { Seat, SeatHistoryEntry } from "@/lib/types";
 import { CHIP_PRESETS } from "@/lib/constants";
 import { apiJson } from "@/lib/api";
+import ReturnCreditModal from "@/components/ReturnCreditModal";
 
 export default function SeatActionSheet({
   open,
@@ -13,6 +14,7 @@ export default function SeatActionSheet({
   onAssign,
   onAdd,
   onClear,
+  onReturnCredit,
 }: {
   open: boolean;
   seat: Seat | null;
@@ -21,6 +23,7 @@ export default function SeatActionSheet({
   onAssign: (playerName: string | null, skipHistory?: boolean) => Promise<void>;
   onAdd: (amount: number) => void;
   onClear: () => Promise<void>;
+  onReturnCredit?: (amount: number) => Promise<void>;
 }) {
   const [playerName, setPlayerName] = useState("");
   const [initialName, setInitialName] = useState<string | null>(null);
@@ -29,6 +32,8 @@ export default function SeatActionSheet({
   const [history, setHistory] = useState<SeatHistoryEntry[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [clearing, setClearing] = useState(false);
+  const [showReturnCreditModal, setShowReturnCreditModal] = useState(false);
+  const [returningCredit, setReturningCredit] = useState(false);
 
   // Sync playerName and initialName when panel opens
   useEffect(() => {
@@ -94,6 +99,20 @@ export default function SeatActionSheet({
       hour: "2-digit",
       minute: "2-digit",
     });
+  };
+
+  const handleReturnCredit = async (amount: number) => {
+    if (!onReturnCredit) return;
+    setReturningCredit(true);
+    try {
+      await onReturnCredit(amount);
+      setShowReturnCreditModal(false);
+    } catch (e) {
+      console.error("Failed to return credit", e);
+      alert("Ошибка при возврате кредита");
+    } finally {
+      setReturningCredit(false);
+    }
   };
 
   if (!open || !seat) return null;
@@ -187,24 +206,35 @@ export default function SeatActionSheet({
         <div className="mb-3">
           <div className="flex items-center justify-between mb-1">
             <div className="text-xs text-zinc-500">Игрок</div>
-            {(playerName || playerChips > 0) && (
-              <button
-                className="text-sm text-white font-semibold px-4 py-2 rounded-xl bg-orange-600 hover:bg-orange-700 active:bg-orange-800 disabled:opacity-50"
-                onClick={async () => {
-                  setClearing(true);
-                  try {
-                    await onClear();
-                    setPlayerName("");
-                    setInitialName(null);
-                  } finally {
-                    setClearing(false);
-                  }
-                }}
-                disabled={clearing}
-              >
-                {clearing ? "..." : "Сменить игрока"}
-              </button>
-            )}
+            <div className="flex gap-2">
+              {creditAmount > 0 && (
+                <button
+                  className="text-sm text-white font-semibold px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 active:bg-blue-800 disabled:opacity-50"
+                  onClick={() => setShowReturnCreditModal(true)}
+                  disabled={returningCredit}
+                >
+                  Вернуть кредит
+                </button>
+              )}
+              {(playerName || playerChips > 0) && (
+                <button
+                  className="text-sm text-white font-semibold px-4 py-2 rounded-xl bg-orange-600 hover:bg-orange-700 active:bg-orange-800 disabled:opacity-50"
+                  onClick={async () => {
+                    setClearing(true);
+                    try {
+                      await onClear();
+                      setPlayerName("");
+                      setInitialName(null);
+                    } finally {
+                      setClearing(false);
+                    }
+                  }}
+                  disabled={clearing}
+                >
+                  {clearing ? "..." : "Сменить игрока"}
+                </button>
+              )}
+            </div>
           </div>
           <input
             value={playerName}
@@ -344,6 +374,16 @@ export default function SeatActionSheet({
         </div>
 
       </div>
+
+      <ReturnCreditModal
+        open={showReturnCreditModal}
+        currentCredit={creditAmount}
+        playerName={seat.player_name}
+        seatNo={seatNo}
+        onConfirm={handleReturnCredit}
+        onCancel={() => setShowReturnCreditModal(false)}
+        loading={returningCredit}
+      />
     </div>
   );
 }

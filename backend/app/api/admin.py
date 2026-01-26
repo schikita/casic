@@ -9,7 +9,7 @@ from typing import Any, cast
 from ..core.deps import get_current_user, get_db, get_owner_id_for_filter, require_roles
 from ..core.exceptions import ErrorMessages
 from ..core.security import get_password_hash
-from ..models.db import CasinoBalanceAdjustment, ChipOp, ChipPurchase, DealerRakeEntry, Seat, Session, SessionDealerAssignment, Table, User
+from ..models.db import CasinoBalanceAdjustment, ChipOp, ChipPurchase, DealerRakeEntry, Seat, Session, SessionDealerAssignment, SessionWaiterAssignment, Table, User
 from ..models.schemas import (
     CasinoBalanceAdjustmentIn,
     CasinoBalanceAdjustmentOut,
